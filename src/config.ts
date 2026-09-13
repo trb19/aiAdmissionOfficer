@@ -22,7 +22,7 @@ export const config = {
 
   gemini: {
     apiKey: required("GEMINI_API_KEY"),
-    model: process.env.GEMINI_MODEL ?? "gemini-2.0-flash",
+        model: process.env.GEMINI_MODEL ?? "gemini-3.6-flash",
   },
 
   sheets: {
