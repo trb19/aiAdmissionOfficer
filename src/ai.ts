@@ -122,25 +122,40 @@ export async function generateReply(
   history: StoredMessage[] = [],
   profile: FamilyProfile
 ): Promise<string> {
-  const model = genAI.getGenerativeModel({
-    model: config.gemini.model,
-    systemInstruction: `${buildSystemPrompt(profile)}\n${factsWithEscalationNumber(config.escalationPhone)}`,
-  });
+  const fallback = `Thanks for reaching out! Let me have our team get back to you on that - you can also call ${config.escalationPhone} directly.`;
 
-  // A real multi-turn chat (via startChat) rather than a single one-shot prompt is what lets the
-  // bot understand a follow-up like "what about the Daycare program instead?" - Gemini sees the
-  // preceding turns as actual conversation history, not just static context stuffed into one
-  // string. History is capped upstream (src/db.ts) so this stays a short, cheap call.
-  const chat = model.startChat({ history: toGeminiHistory(history) });
-  const result = await chat.sendMessage(parentMessage);
-  const text = result.response.text().trim();
+  // The Gemini call itself can fail outright (quota/rate limits, network blips, an outage) rather
+  // than just returning a bad response - without this try/catch, that failure propagates up
+  // through handleWebhookEvent's per-message loop in server.ts and the parent gets no reply at
+  // all for that message (and any later messages in the same webhook batch get skipped too,
+  // since the loop throws out). A quota error is exactly the kind of thing that shows up in
+  // production logs with zero warning, so this has to degrade to the same safe fallback used for
+  // an empty/refused response below, not just log and go silent.
+  let text: string;
+  try {
+    const model = genAI.getGenerativeModel({
+      model: config.gemini.model,
+      systemInstruction: `${buildSystemPrompt(profile)}\n${factsWithEscalationNumber(config.escalationPhone)}`,
+    });
+
+    // A real multi-turn chat (via startChat) rather than a single one-shot prompt is what lets the
+    // bot understand a follow-up like "what about the Daycare program instead?" - Gemini sees the
+    // preceding turns as actual conversation history, not just static context stuffed into one
+    // string. History is capped upstream (src/db.ts) so this stays a short, cheap call.
+    const chat = model.startChat({ history: toGeminiHistory(history) });
+    const result = await chat.sendMessage(parentMessage);
+    text = result.response.text().trim();
+  } catch (err) {
+    console.error("Gemini call failed in generateReply:", err);
+    return fallback;
+  }
 
   // A model refusal, empty response, or something absurdly long is treated as a failure rather
   // than sent to a parent as-is - fall back to a safe, honest message and let a human take it
   // from there. This mirrors the master spec's "no claim of certainty from an uncertain model"
   // stance, scaled down to what a keyword check plus a length guard can catch in Phase 0.
   if (!text || text.length > 800) {
-    return `Thanks for reaching out! Let me have our team get back to you on that - you can also call ${config.escalationPhone} directly.`;
+    return fallback;
   }
 
   return text;
