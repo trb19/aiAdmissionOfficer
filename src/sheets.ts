@@ -148,3 +148,139 @@ export async function upsertConversationSummary(
     console.error("Failed to update conversation summary in Google Sheets:", err);
   }
 }
+
+// --- CRM lead tracker -------------------------------------------------------------------------
+// GLO's staff already run their admissions pipeline out of a "CRM" tab (Lead ID, Date of Inquiry,
+// Child Name, Class Interested, Parent Name, Phone, Age, Status, Last Contact Date, Next
+// Follow-up Date, Source, Remarks, Address) fed by phone calls, school visits, and ad leads
+// (Insta/Facebook Ads). Confirmed with Tirth 14 Sept 2026: a WhatsApp enquiry should land in that
+// same tab (Source "Whatsapp") rather than a bot-only sheet, so staff have one place to see every
+// lead regardless of how it came in.
+const CRM_TAB_NAME = "CRM";
+const CRM_HEADER = [
+  "Lead ID",
+  "Date of Inquiry",
+  "Child Name",
+  "Class Interested",
+  "Parent Name",
+  "Phone",
+  "Age",
+  "Status",
+  "Last Contact Date",
+  "Next Follow-up Date",
+  "Source",
+  "Remarks",
+  "Address",
+];
+
+/** Matches the sheet's own "14-Sep-2026" style dates, in IST (the school's timezone) rather than
+ * whatever timezone the server happens to run in. */
+function formatCrmDate(d: Date): string {
+  return d
+    .toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" })
+    .replace(/ /g, "-");
+}
+
+/** Existing CRM rows use plain digit strings in all sorts of shapes (with/without +91, spaces).
+ * Comparing by the last 10 digits matches a WhatsApp lead against a staff-entered phone-call or
+ * visit row for the same family without needing every source to agree on formatting. */
+function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, "").slice(-10);
+}
+
+export interface CrmLeadUpdate {
+  phone: string;
+  parentName?: string;
+  childName?: string;
+  childAge?: string;
+}
+
+/** Adds or updates one row per family in the shared "CRM" tab, keyed by phone number - one lead,
+ * one row, no matter whether it started as a phone call, a school visit, an ad click, or (now) a
+ * WhatsApp message. Deliberately non-destructive: Status, Next Follow-up Date, Remarks, Address,
+ * and Class Interested are staff-owned fields this never overwrites, only fills in when still
+ * blank, so it's safe to call on every inbound message without undoing a staff member's follow-up
+ * work. A brand-new lead gets Status "Open" (matching the convention already used for
+ * fresh/unqualified rows in this sheet) and the next sequential Lead ID. Last Contact Date is the
+ * one field always refreshed, since that's the whole point of logging a new touchpoint.
+ *
+ * Note: Lead ID assignment reads the sheet's current max ID and adds one, so two brand-new leads
+ * arriving in the same instant could in theory grab the same ID - an acceptable risk at Phase 0's
+ * traffic, not something worth a locking scheme yet. */
+export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
+  try {
+    const sheets = await getSheetsClient();
+    await ensureTab(sheets, CRM_TAB_NAME, CRM_HEADER);
+
+    const { data } = await sheets.spreadsheets.values.get({
+      spreadsheetId: config.sheets.spreadsheetId,
+      range: `${CRM_TAB_NAME}!A2:M`,
+    });
+    const rows = data.values ?? [];
+    const target = normalizePhone(update.phone);
+
+    let maxLeadId = 0;
+    let matchIndex = -1;
+    rows.forEach((row, i) => {
+      const idNum = Number(row[0]);
+      if (Number.isFinite(idNum) && idNum > maxLeadId) maxLeadId = idNum;
+      if (matchIndex === -1 && target.length === 10 && normalizePhone(row[5] ?? "") === target) {
+        matchIndex = i;
+      }
+    });
+
+    const today = formatCrmDate(new Date());
+    const cell = (row: string[], i: number) => row[i] ?? "";
+
+    if (matchIndex === -1) {
+      const row = [
+        String(maxLeadId + 1),
+        today,
+        update.childName ?? "",
+        "",
+        update.parentName ?? "",
+        update.phone,
+        update.childAge ?? "",
+        "Open",
+        today,
+        "",
+        "Whatsapp",
+        "",
+        "",
+      ];
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: config.sheets.spreadsheetId,
+        range: `${CRM_TAB_NAME}!A:M`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [row] },
+      });
+    } else {
+      const existing = rows[matchIndex];
+      const sheetRow = matchIndex + 2; // +1 for header, +1 to go from 0-based to 1-based
+      const row = [
+        cell(existing, 0) || String(maxLeadId + 1),
+        cell(existing, 1) || today,
+        cell(existing, 2) || (update.childName ?? ""),
+        cell(existing, 3),
+        cell(existing, 4) || (update.parentName ?? ""),
+        update.phone,
+        cell(existing, 6) || (update.childAge ?? ""),
+        cell(existing, 7) || "Open",
+        today,
+        cell(existing, 9),
+        cell(existing, 10) || "Whatsapp",
+        cell(existing, 11),
+        cell(existing, 12),
+      ];
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: config.sheets.spreadsheetId,
+        range: `${CRM_TAB_NAME}!A${sheetRow}:M${sheetRow}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [row] },
+      });
+    }
+  } catch (err) {
+    // Same rule as logEnquiry: never let a Sheets hiccup break a parent's reply.
+    console.error("Failed to upsert CRM lead in Google Sheets:", err);
+  }
+}
