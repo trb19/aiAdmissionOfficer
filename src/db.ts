@@ -196,6 +196,29 @@ async function seedFaqEntries(): Promise<void> {
       [entry.id, entry.keywords, entry.question, entry.answer]
     );
   }
+  await syncCorrectedFaqAnswers();
+}
+
+/** One-time (per boot) targeted fix-up for FAQ rows whose already-seeded answer needs to catch up
+ * with a code-level correction, since seedFaqEntries()'s ON CONFLICT DO NOTHING never touches a row
+ * that already exists. Each entry here is a specific "row X's live answer is stale, force it to the
+ * current FAQ_SEED text" fix - not a general always-sync (that would fight direct DB edits, which is
+ * the intended way to correct/expand answers per this file's own doc comment above). The WHERE clause
+ * makes this a no-op once the row matches, so it's safe to leave in permanently instead of removing
+ * it after one deploy.
+ * - "curriculum": corrected 14 Sept 2026 to the play-based/phonics/skills-for-the-future wording
+ *   Tirth confirmed; the row had been seeded with the old placeholder text before that. */
+async function syncCorrectedFaqAnswers(): Promise<void> {
+  const idsToSync = ["curriculum"];
+  for (const id of idsToSync) {
+    const entry = FAQ_SEED.find((e) => e.id === id);
+    if (!entry) continue;
+    await getPool().query(
+      `UPDATE faq_entries SET keywords = $2, question = $3, answer = $4, updated_at = now()
+       WHERE id = $1 AND answer IS DISTINCT FROM $4`,
+      [entry.id, entry.keywords, entry.question, entry.answer]
+    );
+  }
 }
 
 export interface FaqEntry {
