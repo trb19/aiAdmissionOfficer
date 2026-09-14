@@ -7,9 +7,17 @@ import {
   humanHandoffReply,
   generateReply,
   summarizeConversation,
+  extractChildInfo,
+  needsIntake,
 } from "./ai.js";
 import { logEnquiry, upsertConversationSummary } from "./sheets.js";
-import { getRecentHistory, saveMessage } from "./db.js";
+import {
+  getRecentHistory,
+  saveMessage,
+  getFamilyProfile,
+  upsertFamilyProfile,
+  incrementIntakeAttempts,
+} from "./db.js";
 
 const app = express();
 app.use(express.json());
@@ -58,26 +66,60 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
     }
     seenMessageIds.add(message.messageId);
 
+    // The WhatsApp display name arrives on every message but only needs to be stored once - safe
+    // to call every time regardless, upsertFamilyProfile leaves other fields untouched.
+    if (message.parentName) {
+      await upsertFamilyProfile(message.from, { parentName: message.parentName });
+    }
+
     const classification = classifyMessage(message.text);
 
     // Pulled once per message and reused for both the reply and the running summary below - this
     // is the bot's actual memory of the conversation so far (see src/db.ts), separate from the
     // Google Sheet's human-facing log.
     const history = await getRecentHistory(message.from);
+    const profile = await getFamilyProfile(message.from);
+
+    // Whether THIS reply is allowed to ask for the child's name/age, decided once up front from
+    // the profile as it stood before this turn - both feeRedirectReply and generateReply make the
+    // same decision independently, so this is what tells us afterwards whether to count it as an
+    // attempt (see MAX_INTAKE_ATTEMPTS in ai.ts).
+    const askingForIntake = needsIntake(profile);
 
     let reply: string;
     if (classification === "FEE_QUESTION") {
-      reply = feeRedirectReply(config.escalationPhone);
+      reply = feeRedirectReply(profile);
     } else if (classification === "HUMAN_REQUEST") {
       reply = humanHandoffReply(config.escalationPhone);
     } else {
-      reply = await generateReply(message.text, history);
+      reply = await generateReply(message.text, history, profile);
     }
 
     await sendWhatsAppText(message.from, reply);
 
+    if (askingForIntake && classification !== "HUMAN_REQUEST") {
+      await incrementIntakeAttempts(message.from);
+    }
+
     await saveMessage(message.from, "user", message.text);
     await saveMessage(message.from, "model", reply);
+
+    // Pick up the child's name/age the moment either is shared - whether that's a direct answer to
+    // being asked, or volunteered unprompted. Only bothers with the extra Gemini call while
+    // there's still something missing to find.
+    if (!profile.childName || !profile.childAge) {
+      const precedingAssistantMessage =
+        history.length > 0 && history[history.length - 1].role === "model"
+          ? history[history.length - 1].content
+          : undefined;
+      const extracted = await extractChildInfo(message.text, precedingAssistantMessage);
+      if (extracted.childName || extracted.childAge) {
+        await upsertFamilyProfile(message.from, {
+          ...(extracted.childName ? { childName: extracted.childName } : {}),
+          ...(extracted.childAge ? { childAge: extracted.childAge } : {}),
+        });
+      }
+    }
 
     await logEnquiry({
       timestamp: new Date(Number(message.timestamp) * 1000).toISOString(),
