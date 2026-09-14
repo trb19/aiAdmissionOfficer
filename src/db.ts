@@ -108,7 +108,7 @@ const FAQ_SEED: Array<{ id: string; keywords: string[]; question: string; answer
     keywords: ["curriculum", "medium of instruction", "what do you teach", "what will my child learn"],
     question: "What's the curriculum / medium of instruction?",
     answer:
-      "We follow a play-based early-years curriculum. English is the medium of instruction, though Assamese/Hindi/English are all fine for talking with parents. Children start alphabet and number recognition from Playgroup, and read and write independently by the time they finish Sr. KG.",
+      "We follow a play-based early-years curriculum focused on skills for the future. English is the primary medium of instruction, though Assamese/Hindi/English are all used as needed with parents. From Playgroup, children start learning phonics, developing motor skills, and picking up practical life skills. By the time they finish Sr. KG, they read and write independently, speak confidently, and have developed questioning skills - a foundation that helps them throughout their education journey.",
   },
   {
     id: "location",
