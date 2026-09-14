@@ -1,8 +1,15 @@
 import express from "express";
 import { config } from "./config.js";
 import { extractInboundMessages, sendWhatsAppText } from "./whatsapp.js";
-import { classifyMessage, feeRedirectReply, humanHandoffReply, generateReply } from "./ai.js";
-import { logEnquiry } from "./sheets.js";
+import {
+  classifyMessage,
+  feeRedirectReply,
+  humanHandoffReply,
+  generateReply,
+  summarizeConversation,
+} from "./ai.js";
+import { logEnquiry, upsertConversationSummary } from "./sheets.js";
+import { getRecentHistory, saveMessage } from "./db.js";
 
 const app = express();
 app.use(express.json());
@@ -53,16 +60,24 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
 
     const classification = classifyMessage(message.text);
 
+    // Pulled once per message and reused for both the reply and the running summary below - this
+    // is the bot's actual memory of the conversation so far (see src/db.ts), separate from the
+    // Google Sheet's human-facing log.
+    const history = await getRecentHistory(message.from);
+
     let reply: string;
     if (classification === "FEE_QUESTION") {
       reply = feeRedirectReply(config.escalationPhone);
     } else if (classification === "HUMAN_REQUEST") {
       reply = humanHandoffReply(config.escalationPhone);
     } else {
-      reply = await generateReply(message.text);
+      reply = await generateReply(message.text, history);
     }
 
     await sendWhatsAppText(message.from, reply);
+
+    await saveMessage(message.from, "user", message.text);
+    await saveMessage(message.from, "model", reply);
 
     await logEnquiry({
       timestamp: new Date(Number(message.timestamp) * 1000).toISOString(),
@@ -71,6 +86,13 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
       aiAnswer: reply,
       classification,
     });
+
+    // Refresh the plain-English running summary staff see in the "Conversations" tab. Uses the
+    // full history including the turn that was just saved, so the summary always reflects what
+    // the parent just said and how the bot just answered.
+    const fullHistory = [...history, { role: "user" as const, content: message.text }, { role: "model" as const, content: reply }];
+    const summary = await summarizeConversation(fullHistory);
+    await upsertConversationSummary(message.from, summary, classification);
   }
 }
 
