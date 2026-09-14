@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "./config.js";
 import { factsWithEscalationNumber } from "./facts.js";
+import type { StoredMessage } from "./db.js";
 
 const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 
@@ -49,14 +50,27 @@ about admissions. This is a pilot with a limited scope - follow these rules exac
 Approved facts:
 `.trim();
 
-export async function generateReply(parentMessage: string): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: config.gemini.model });
+/** Turns stored history rows into the shape Gemini's chat API expects. History is trimmed to
+ * recent turns by src/db.ts before it ever reaches here - this function just reformats. */
+function toGeminiHistory(history: StoredMessage[]) {
+  return history.map((m) => ({ role: m.role, parts: [{ text: m.content }] }));
+}
 
-  const prompt = `${SYSTEM_PROMPT_PREFIX}\n${factsWithEscalationNumber(
-    config.escalationPhone
-  )}\n\nParent's message: "${parentMessage}"\n\nYour reply:`;
+export async function generateReply(
+  parentMessage: string,
+  history: StoredMessage[] = []
+): Promise<string> {
+  const model = genAI.getGenerativeModel({
+    model: config.gemini.model,
+    systemInstruction: `${SYSTEM_PROMPT_PREFIX}\n${factsWithEscalationNumber(config.escalationPhone)}`,
+  });
 
-  const result = await model.generateContent(prompt);
+  // A real multi-turn chat (via startChat) rather than a single one-shot prompt is what lets the
+  // bot understand a follow-up like "what about the Daycare program instead?" - Gemini sees the
+  // preceding turns as actual conversation history, not just static context stuffed into one
+  // string. History is capped upstream (src/db.ts) so this stays a short, cheap call.
+  const chat = model.startChat({ history: toGeminiHistory(history) });
+  const result = await chat.sendMessage(parentMessage);
   const text = result.response.text().trim();
 
   // A model refusal, empty response, or something absurdly long is treated as a failure rather
@@ -68,4 +82,32 @@ export async function generateReply(parentMessage: string): Promise<string> {
   }
 
   return text;
+}
+
+const SUMMARY_PROMPT_PREFIX = `
+Summarize the WhatsApp conversation below between a parent and GLO Preschool & Daycare's
+admissions assistant, for a staff member skimming a spreadsheet - not for the parent. Write 1-3
+short sentences covering: what the parent is asking about or interested in, anything notable GLO
+should follow up on (e.g. they were told to call about fees, they asked for a human), and the
+overall state of the conversation. Do not invent details that aren't in the conversation. Do not
+include a greeting or preamble - output only the summary itself.
+
+Conversation:
+`.trim();
+
+/** Produces the short running summary stored in the Google Sheet's "Conversations" tab (see
+ * src/sheets.ts's upsertConversationSummary). This is a separate, cheap Gemini call made after
+ * every reply - fine at Phase 0's volume, and worth revisiting (e.g. only re-summarize every few
+ * messages) if usage grows enough for the extra call to matter. */
+export async function summarizeConversation(history: StoredMessage[]): Promise<string> {
+  const model = genAI.getGenerativeModel({ model: config.gemini.model });
+
+  const transcript = history
+    .map((m) => `${m.role === "user" ? "Parent" : "Assistant"}: ${m.content}`)
+    .join("\n");
+
+  const result = await model.generateContent(`${SUMMARY_PROMPT_PREFIX}\n${transcript}`);
+  const text = result.response.text().trim();
+
+  return text || "No summary available.";
 }
