@@ -119,10 +119,10 @@ const FAQ_SEED: Array<{ id: string; keywords: string[]; question: string; answer
   },
   {
     id: "visit-tour",
-    keywords: ["can we visit", "school tour", "want to visit", "see the campus", "come and see"],
+    keywords: ["can we visit", "school tour", "want to visit", "see the campus", "come and see", "which days can we visit", "open sunday", "visit on saturday"],
     question: "Can we visit the school?",
     answer:
-      "Of course! Visits happen 1:00pm-3:00pm, by appointment. When are you planning to visit? We'll schedule it and mark our calendar.",
+      "Of course! Visits are welcome any day except Sunday, generally 1:00pm-3:00pm. When are you planning to visit? We'll schedule it and mark our calendar.",
   },
   {
     id: "office-hours",
@@ -137,13 +137,62 @@ const FAQ_SEED: Array<{ id: string; keywords: string[]; question: string; answer
     question: "What's your student-teacher ratio?",
     answer: "Our student-teacher ratio is 5:1.",
   },
+  {
+    id: "settling-in",
+    keywords: [
+      "guardian allowed",
+      "parent allowed",
+      "stay with child",
+      "stay inside",
+      "settle in",
+      "settling in",
+      "first day",
+      "will he cry",
+      "will she cry",
+    ],
+    question: "Can I stay with my child on the first day?",
+    answer:
+      "Parents wait in our waiting area rather than inside with the child - it helps them settle in and bond with staff faster. We'll call you if your child needs you. Each child gets a dedicated caretaker, and most settle in within 1-2 weeks.",
+  },
+  {
+    id: "flexible-timing",
+    keywords: [
+      "start with less time",
+      "shorter hours",
+      "half day",
+      "reduce timing",
+      "1 hour",
+      "one hour",
+      "gradually increase",
+      "adjusted for",
+    ],
+    question: "Can my child start with shorter hours?",
+    answer:
+      "Yes, timing is flexible for new admissions - your child can start with just an hour a day and we increase it gradually as they settle in.",
+  },
+  {
+    id: "playgroup-style",
+    keywords: [
+      "sit and study",
+      "sit in chairs",
+      "seated study",
+      "structured study",
+      "will he study",
+      "will she study",
+      "play related games",
+      "play based",
+    ],
+    question: "Is it play-based or structured study?",
+    answer:
+      "It's entirely play-based, especially in Playgroup - no chairs, no forced seated study. Kids learn through play and activities.",
+  },
 ];
 
 async function seedFaqEntries(): Promise<void> {
   for (const entry of FAQ_SEED) {
     await getPool().query(
       `INSERT INTO faq_entries (id, keywords, question, answer) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (id) DO NOTHING`,
+       ON CONFLICT (id) DO NOTHINF`,
       [entry.id, entry.keywords, entry.question, entry.answer]
     );
   }
