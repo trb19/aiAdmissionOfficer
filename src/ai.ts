@@ -118,34 +118,16 @@ function toGeminiHistory(history: StoredMessage[]) {
 }
 
 // --- Gemini call throttling -------------------------------------------------------------------
-// The free-tier API key's RPM quota turned out to be low enough (see the 429s in production
-// logs) that even a single incoming WhatsApp message - which can make up to three Gemini calls
-// (generateReply, extractChildInfo, summarizeConversation) - was enough to trip it under any kind
-// of burst. Rather than a retry/backoff scheme, every Gemini call in this file funnels through
-// this one queue and is spaced at least MIN_GEMINI_CALL_INTERVAL_MS apart from the previous call,
-// globally, regardless of which function it came from. At 25s spacing that's ~2.4 requests/min,
-// safely under the 5 RPM limit shown in the AI Studio dashboard. Tirth explicitly signed off on
-// the resulting reply latency in exchange for not silently dropping messages (confirmed 14 Sept
-// 2026) - see the fallback-on-failure logic in generateReply below, which still applies if the
-// quota is hit anyway (e.g. the RPD/day quota, which this queue does nothing for).
-const MIN_GEMINI_CALL_INTERVAL_MS = 25_000;
-let geminiQueue: Promise<void> = Promise.resolve();
-let lastGeminiCallAt = 0;
-
+// A hard-spaced global throttle (25s between any two Gemini calls) lived here while the bot was
+// pinned to gemini-3.6-flash's tight free-tier quota (5 RPM / 20 RPD). Since moving to
+// gemini-3.5-flash-lite (15 RPM / 500 RPD - confirmed 14 Sept 2026), that much headroom made the
+// throttle pure added latency for no real protection, so Tirth asked for it to come out (confirmed
+// 14 Sept 2026). throttledGeminiCall is now a passthrough - kept as a named wrapper rather than
+// removing the call sites below, so a future throttle (if a model swap ever needs one again) is a
+// one-function change. The try/catch fallback-on-failure in generateReply below still applies if a
+// quota is ever hit anyway.
 function throttledGeminiCall<T>(fn: () => Promise<T>): Promise<T> {
-  const gate = geminiQueue.then(async () => {
-    const waitMs = lastGeminiCallAt + MIN_GEMINI_CALL_INTERVAL_MS - Date.now();
-    if (waitMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
-    lastGeminiCallAt = Date.now();
-  });
-
-  // The shared queue itself must never reject - a failed call would otherwise wedge every call
-  // queued behind it. The real error still reaches the caller via the returned promise below.
-  geminiQueue = gate.catch(() => {});
-
-  return gate.then(fn);
+  return fn();
 }
 
 export async function generateReply(
