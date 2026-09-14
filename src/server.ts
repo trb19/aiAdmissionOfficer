@@ -12,7 +12,7 @@ import {
   intakeAskSuffix,
 } from "./ai.js";
 import { matchFaq } from "./faq.js";
-import { logEnquiry, upsertConversationSummary } from "./sheets.js";
+import { logEnquiry, upsertConversationSummary, upsertCrmLead } from "./sheets.js";
 import {
   getRecentHistory,
   saveMessage,
@@ -120,6 +120,8 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
     // Pick up the child's name/age the moment either is shared - whether that's a direct answer to
     // being asked, or volunteered unprompted. Only bothers with the extra Gemini call while
     // there's still something missing to find.
+    let latestChildName = profile.childName ?? undefined;
+    let latestChildAge = profile.childAge ?? undefined;
     if (!profile.childName || !profile.childAge) {
       const precedingAssistantMessage =
         history.length > 0 && history[history.length - 1].role === "model"
@@ -132,6 +134,8 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
           ...(extracted.childAge ? { childAge: extracted.childAge } : {}),
         });
       }
+      latestChildName = extracted.childName ?? latestChildName;
+      latestChildAge = extracted.childAge ?? latestChildAge;
     }
 
     await logEnquiry({
@@ -140,6 +144,16 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
       question: message.text,
       aiAnswer: reply,
       classification,
+    });
+
+    // GLO's team works leads out of the shared "CRM" tab regardless of source (phone, visit, ads)
+    // - see src/sheets.ts's upsertCrmLead for why this is safe to call on every message without
+    // clobbering a staff member's own follow-up notes.
+    await upsertCrmLead({
+      phone: message.from,
+      parentName: message.parentName ?? profile.parentName ?? undefined,
+      childName: latestChildName,
+      childAge: latestChildAge,
     });
 
     // Refresh the plain-English running summary staff see in the "Conversations" tab. Uses the
