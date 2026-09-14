@@ -1,8 +1,9 @@
 // Quick logic sanity check that needs no real credentials - not a real test suite (no framework),
 // just a fast way to catch an obviously broken classifier or payload parser before real testing.
-import { classifyMessage, feeRedirectReply, needsIntake, MAX_INTAKE_ATTEMPTS } from "./ai.js";
+import { classifyMessage, feeRedirectReply, needsIntake, intakeAskSuffix, MAX_INTAKE_ATTEMPTS } from "./ai.js";
 import { extractInboundMessages } from "./whatsapp.js";
-import type { FamilyProfile } from "./db.js";
+import { matchFaq } from "./faq.js";
+import type { FamilyProfile, FaqEntry } from "./db.js";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -79,5 +80,18 @@ const feeReplyKnown = feeRedirectReply(knownProfile);
 assertEqual(/\d{6,}/.test(feeReplyKnown), false, "fee reply never contains a phone number once child info is known");
 assertEqual(feeReplyKnown.includes("Aarav"), true, "fee reply uses the child's name once known");
 assertEqual(feeReplyKnown.toLowerCase().includes("what's"), false, "fee reply does not re-ask once child info is known");
+
+const faqEntries: FaqEntry[] = [
+  { id: "age-eligibility", keywords: ["what age", "minimum age"], question: "What age?", answer: "Playgroup is from 18 months..." },
+  { id: "location", keywords: ["your address", "where are you located"], question: "Where are you?", answer: "Bylane 3, Baroholia, Tezpur." },
+];
+
+assertEqual(matchFaq("What age can my son join?", faqEntries)?.id, "age-eligibility", "matches FAQ by keyword phrase regardless of exact wording");
+assertEqual(matchFaq("Where are you located?", faqEntries)?.id, "location", "matches a second FAQ entry independently");
+assertEqual(matchFaq("Do you have a swimming pool?", faqEntries), null, "returns null when nothing matches, so the caller falls through to the AI");
+
+assertEqual(intakeAskSuffix(emptyProfile) !== null, true, "intakeAskSuffix returns something when intake is still needed");
+assertEqual(intakeAskSuffix(knownProfile), null, "intakeAskSuffix returns null once child info is known");
+assertEqual(intakeAskSuffix(exhaustedProfile), null, "intakeAskSuffix returns null once attempts are exhausted");
 
 console.log("Self-test complete.");
