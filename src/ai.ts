@@ -117,6 +117,37 @@ function toGeminiHistory(history: StoredMessage[]) {
   return history.map((m) => ({ role: m.role, parts: [{ text: m.content }] }));
 }
 
+// --- Gemini call throttling -------------------------------------------------------------------
+// The free-tier API key's RPM quota turned out to be low enough (see the 429s in production
+// logs) that even a single incoming WhatsApp message - which can make up to three Gemini calls
+// (generateReply, extractChildInfo, summarizeConversation) - was enough to trip it under any kind
+// of burst. Rather than a retry/backoff scheme, every Gemini call in this file funnels through
+// this one queue and is spaced at least MIN_GEMINI_CALL_INTERVAL_MS apart from the previous call,
+// globally, regardless of which function it came from. At 25s spacing that's ~2.4 requests/min,
+// safely under the 5 RPM limit shown in the AI Studio dashboard. Tirth explicitly signed off on
+// the resulting reply latency in exchange for not silently dropping messages (confirmed 14 Sept
+// 2026) - see the fallback-on-failure logic in generateReply below, which still applies if the
+// quota is hit anyway (e.g. the RPD/day quota, which this queue does nothing for).
+const MIN_GEMINI_CALL_INTERVAL_MS = 25_000;
+let geminiQueue: Promise<void> = Promise.resolve();
+let lastGeminiCallAt = 0;
+
+function throttledGeminiCall<T>(fn: () => Promise<T>): Promise<T> {
+  const gate = geminiQueue.then(async () => {
+    const waitMs = lastGeminiCallAt + MIN_GEMINI_CALL_INTERVAL_MS - Date.now();
+    if (waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    lastGeminiCallAt = Date.now();
+  });
+
+  // The shared queue itself must never reject - a failed call would otherwise wedge every call
+  // queued behind it. The real error still reaches the caller via the returned promise below.
+  geminiQueue = gate.catch(() => {});
+
+  return gate.then(fn);
+}
+
 export async function generateReply(
   parentMessage: string,
   history: StoredMessage[] = [],
@@ -143,7 +174,7 @@ export async function generateReply(
     // preceding turns as actual conversation history, not just static context stuffed into one
     // string. History is capped upstream (src/db.ts) so this stays a short, cheap call.
     const chat = model.startChat({ history: toGeminiHistory(history) });
-    const result = await chat.sendMessage(parentMessage);
+    const result = await throttledGeminiCall(() => chat.sendMessage(parentMessage));
     text = result.response.text().trim();
   } catch (err) {
     console.error("Gemini call failed in generateReply:", err);
@@ -191,7 +222,7 @@ export async function extractChildInfo(
     : `Parent's latest message: ${parentMessage}`;
 
   try {
-    const result = await model.generateContent(`${EXTRACT_PROMPT_PREFIX}\n\n${context}`);
+    const result = await throttledGeminiCall(() => model.generateContent(`${EXTRACT_PROMPT_PREFIX}\n\n${context}`));
     const parsed = JSON.parse(result.response.text().trim());
     return {
       childName: typeof parsed.childName === "string" && parsed.childName.trim() ? parsed.childName.trim() : null,
@@ -229,7 +260,7 @@ export async function summarizeConversation(history: StoredMessage[]): Promise<s
     .map((m) => `${m.role === "user" ? "Parent" : "Assistant"}: ${m.content}`)
     .join("\n");
 
-  const result = await model.generateContent(`${SUMMARY_PROMPT_PREFIX}\n${transcript}`);
+  const result = await throttledGeminiCall(() => model.generateContent(`${SUMMARY_PROMPT_PREFIX}\n${transcript}`));
   const text = result.response.text().trim();
 
   return text || "No summary available.";
