@@ -192,7 +192,7 @@ async function seedFaqEntries(): Promise<void> {
   for (const entry of FAQ_SEED) {
     await getPool().query(
       `INSERT INTO faq_entries (id, keywords, question, answer) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (id) DO NOTHINF`,
+       ON CONFLICT (id) DO NOTHING`,
       [entry.id, entry.keywords, entry.question, entry.answer]
     );
   }
