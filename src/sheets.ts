@@ -193,16 +193,23 @@ export interface CrmLeadUpdate {
   parentName?: string;
   childName?: string;
   childAge?: string;
+  /** Plain-English running summary of the WhatsApp conversation so far (same text that goes into
+   * the "Conversations" tab). Confirmed with Tirth 15 Sept 2026: unlike Status/Next Follow-up
+   * Date/Address/Class Interested, Remarks is meant to be kept fresh by the bot so staff can see
+   * what's been discussed without opening the Conversations tab - so this field IS overwritten
+   * every time a summary is available, rather than only filled in once. */
+  remarks?: string;
 }
 
 /** Adds or updates one row per family in the shared "CRM" tab, keyed by phone number - one lead,
  * one row, no matter whether it started as a phone call, a school visit, an ad click, or (now) a
- * WhatsApp message. Deliberately non-destructive: Status, Next Follow-up Date, Remarks, Address,
- * and Class Interested are staff-owned fields this never overwrites, only fills in when still
- * blank, so it's safe to call on every inbound message without undoing a staff member's follow-up
- * work. A brand-new lead gets Status "Open" (matching the convention already used for
- * fresh/unqualified rows in this sheet) and the next sequential Lead ID. Last Contact Date is the
- * one field always refreshed, since that's the whole point of logging a new touchpoint.
+ * WhatsApp message. Deliberately non-destructive: Status, Next Follow-up Date, Address, and Class
+ * Interested are staff-owned fields this never overwrites, only fills in when still blank, so it's
+ * safe to call on every inbound message without undoing a staff member's follow-up work. Remarks is
+ * the one exception - it's kept in sync with the bot's own conversation summary (see the
+ * CrmLeadUpdate.remarks doc). A brand-new lead gets Status "Open" (matching the convention already
+ * used for fresh/unqualified rows in this sheet) and the next sequential Lead ID. Last Contact Date
+ * is always refreshed too, since that's the whole point of logging a new touchpoint.
  *
  * Note: Lead ID assignment reads the sheet's current max ID and adds one, so two brand-new leads
  * arriving in the same instant could in theory grab the same ID - an acceptable risk at Phase 0's
@@ -245,7 +252,7 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
         today,
         "",
         "Whatsapp",
-        "",
+        update.remarks ?? "",
         "",
       ];
       await sheets.spreadsheets.values.append({
@@ -269,7 +276,7 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
         today,
         cell(existing, 9),
         cell(existing, 10) || "Whatsapp",
-        cell(existing, 11),
+        update.remarks ?? cell(existing, 11),
         cell(existing, 12),
       ];
       await sheets.spreadsheets.values.update({
