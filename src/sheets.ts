@@ -194,11 +194,22 @@ export interface CrmLeadUpdate {
   childName?: string;
   childAge?: string;
   /** Plain-English running summary of the WhatsApp conversation so far (same text that goes into
-   * the "Conversations" tab). Confirmed with Tirth 15 Sept 2026: unlike Status/Next Follow-up
-   * Date/Address/Class Interested, Remarks is meant to be kept fresh by the bot so staff can see
-   * what's been discussed without opening the Conversations tab - so this field IS overwritten
-   * every time a summary is available, rather than only filled in once. */
+   * the "Conversations" tab). Confirmed with Tirth 15 Sept 2026: Remarks is meant to be kept fresh
+   * by the bot so staff can see what's been discussed without opening the Conversations tab.
+   * Refined 15 Sept 2026: rather than overwriting the cell, each new summary is APPENDED as its own
+   * dated line - "15-Sep-2026: <summary>" - so Remarks builds up into a dated log of the whole
+   * relationship over time (phone/visit notes staff add by hand included), which is what actually
+   * helps staff screen a caller quickly. */
   remarks?: string;
+}
+
+/** Appends a dated line to whatever's already in Remarks, rather than replacing it - see the
+ * CrmLeadUpdate.remarks doc for why. No-op (returns the existing text unchanged) when there's no
+ * new remark to add. */
+function appendRemark(existing: string, today: string, remark: string | undefined): string {
+  if (!remark) return existing;
+  const entry = `${today}: ${remark}`;
+  return existing ? `${existing}\n${entry}` : entry;
 }
 
 /** Adds or updates one row per family in the shared "CRM" tab, keyed by phone number - one lead,
@@ -206,8 +217,9 @@ export interface CrmLeadUpdate {
  * WhatsApp message. Deliberately non-destructive: Status, Next Follow-up Date, Address, and Class
  * Interested are staff-owned fields this never overwrites, only fills in when still blank, so it's
  * safe to call on every inbound message without undoing a staff member's follow-up work. Remarks is
- * the one exception - it's kept in sync with the bot's own conversation summary (see the
- * CrmLeadUpdate.remarks doc). A brand-new lead gets Status "Open" (matching the convention already
+ * the one exception - each new conversation summary is appended to it as its own dated line rather
+ * than overwriting what's there (see the CrmLeadUpdate.remarks / appendRemark docs), so staff-typed
+ * notes are preserved too. A brand-new lead gets Status "Open" (matching the convention already
  * used for fresh/unqualified rows in this sheet) and the next sequential Lead ID. Last Contact Date
  * is always refreshed too, since that's the whole point of logging a new touchpoint.
  *
@@ -252,7 +264,7 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
         today,
         "",
         "Whatsapp",
-        update.remarks ?? "",
+        appendRemark("", today, update.remarks),
         "",
       ];
       await sheets.spreadsheets.values.append({
@@ -276,7 +288,7 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
         today,
         cell(existing, 9),
         cell(existing, 10) || "Whatsapp",
-        update.remarks ?? cell(existing, 11),
+        appendRemark(cell(existing, 11), today, update.remarks),
         cell(existing, 12),
       ];
       await sheets.spreadsheets.values.update({
