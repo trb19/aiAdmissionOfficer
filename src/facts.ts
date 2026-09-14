@@ -4,7 +4,7 @@
  * IMPORTANT: fee figures are deliberately NOT included here. GLO's policy (confirmed 13 Sept 2026)
  * is that fees are discussed over a phone call, not quoted by the AI on WhatsApp. Keeping fee
  * numbers out of this file entirely is a deliberate second line of defense on top of the
- * keyword-based redirect in ai.ts's classifyMessage() Ã¢ÂÂ even if a fee question slips past that
+ * keyword-based redirect in ai.ts's classifyMessage() ÃÂ¢ÃÂÃÂ even if a fee question slips past that
  * classifier, the model has no fee figures available to leak.
  *
  * Everything else here is either sourced from GLO's own documents (Parent Handbook 2026, the
@@ -12,7 +12,7 @@
  * "AI Admission Officer" project's glo-approved-facts-draft.md for the full sourcing and the
  * open items not yet resolved (per-class age cutoffs, next session's dates, visit capacity).
  *
- * Update this file, not the AI's behavior, whenever GLO confirms a new fact Ã¢ÂÂ that's the point of
+ * Update this file, not the AI's behavior, whenever GLO confirms a new fact ÃÂ¢ÃÂÃÂ that's the point of
  * keeping facts and the answering logic separate.
  */
 export const GLO_APPROVED_FACTS = `
@@ -20,11 +20,14 @@ School: GLO Preschool & Daycare, Bylane 3, Baroholia, Tezpur, Assam.
 Google Maps location: https://maps.app.goo.gl/rsHjmAdNVXp3MCqBA
 
 Programs: Playgroup, Nursery, Jr. KG, Sr. KG (preschool track), plus a separate Daycare program.
-Play-based early-years curriculum; English is the medium of instruction, with
-Assamese/Hindi/English all fine for parent communication. Children begin alphabet/number
-recognition from Playgroup and read/write independently by the time they finish Sr. KG.
-Student-teacher (student-staff) ratio: 5:1. Playgroup especially is fully play-based - there are no
-chairs and no seated/structured study; children are never forced into classroom-style study.
+Play-based early-years curriculum focused on skills for the future (confirmed 14 Sept 2026). English
+is the primary medium of instruction, with Assamese/Hindi/English all used as needed for parent
+communication. From Playgroup, children start learning phonics, developing motor skills, and
+picking up practical life skills. By the time they finish Sr. KG, they read and write
+independently, speak confidently, and have developed questioning skills - a foundation meant to
+help them throughout their education journey. Student-teacher (student-staff) ratio: 5:1. Playgroup
+especially is fully play-based - there are no chairs and no seated/structured study; children are
+never forced into classroom-style study.
 
 Settling in (confirmed 14 Sept 2026, from an actual parent conversation): parents/guardians are not
 permitted to stay inside the school with the child, even in the first days - they wait in the
