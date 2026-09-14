@@ -146,21 +146,24 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
       classification,
     });
 
+    // Plain-English running summary of the whole chat so far. Computed once here (using the full
+    // history including the turn that was just saved) and reused for both the "Conversations" tab
+    // and the CRM tab's Remarks column, so staff see the same up-to-date summary in either place.
+    const fullHistory = [...history, { role: "user" as const, content: message.text }, { role: "model" as const, content: reply }];
+    const summary = await summarizeConversation(fullHistory);
+
     // GLO's team works leads out of the shared "CRM" tab regardless of source (phone, visit, ads)
     // - see src/sheets.ts's upsertCrmLead for why this is safe to call on every message without
-    // clobbering a staff member's own follow-up notes.
+    // clobbering a staff member's own follow-up notes (Remarks aside - that's kept in sync with
+    // the summary below on purpose).
     await upsertCrmLead({
       phone: message.from,
       parentName: message.parentName ?? profile.parentName ?? undefined,
       childName: latestChildName,
       childAge: latestChildAge,
+      remarks: summary,
     });
 
-    // Refresh the plain-English running summary staff see in the "Conversations" tab. Uses the
-    // full history including the turn that was just saved, so the summary always reflects what
-    // the parent just said and how the bot just answered.
-    const fullHistory = [...history, { role: "user" as const, content: message.text }, { role: "model" as const, content: reply }];
-    const summary = await summarizeConversation(fullHistory);
     await upsertConversationSummary(message.from, summary, classification);
   }
 }
