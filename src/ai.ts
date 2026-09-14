@@ -39,19 +39,28 @@ export function feeRedirectReply(profile: FamilyProfile): string {
   if (needsIntake(profile)) {
     return (
       `Fees depend on the class, so let me get you the right number - what's your child's name ` +
-      `and age? Our team will follow up with the exact details.`
+      `and age? Our admission coordinator will get in touch with you with the exact details.`
     );
   }
   const name = profile.childName;
   return name
-    ? `Fees vary by class, so I'll have our team follow up with the exact details for ${name}.`
-    : `Fees vary by class, so I'll have our team follow up with the exact details.`;
+    ? `Fees vary by class, so our admission coordinator will get in touch with you with the exact details for ${name}.`
+    : `Fees vary by class, so our admission coordinator will get in touch with you with the exact details.`;
+}
+
+/** A short, generic version of the same name/age ask used elsewhere - for replies that don't go
+ * through Gemini at all (the FAQ cache in server.ts) and so can't have the ask folded in
+ * naturally by the model. Returns null when there's nothing to ask (already known, or attempts
+ * exhausted), so callers can skip appending anything. */
+export function intakeAskSuffix(profile: FamilyProfile): string | null {
+  if (!needsIntake(profile)) return null;
+  return "By the way, what's your child's name and age?";
 }
 
 export function humanHandoffReply(escalationPhone: string): string {
   return (
     `Of course! You can reach our team directly at ${escalationPhone} and they'll be happy to help. ` +
-    `Our office hours are 9:00am-5:00pm, Monday to Saturday.`
+    `Our office hours are 9:00am-4:00pm.`
   );
 }
 
