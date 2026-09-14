@@ -58,9 +58,113 @@ function ensureSchema(): Promise<void> {
         intake_attempts INTEGER NOT NULL DEFAULT 0,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
-    `).then(() => undefined);
+
+      CREATE TABLE IF NOT EXISTS faq_entries (
+        id TEXT PRIMARY KEY,
+        keywords TEXT[] NOT NULL,
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT true,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `).then(() => seedFaqEntries());
   }
   return schemaReadyPromise;
+}
+
+/** Pre-approved answers to GLO's most common parent questions, matched by keyword phrase instead
+ * of going through Gemini - see src/faq.ts for the matching logic. Seeded once via ON CONFLICT DO
+ * NOTHING, so this is only ever the *starting* set: editing a row afterwards (e.g. "UPDATE
+ * faq_entries SET answer = ... WHERE id = 'age-eligibility'") is how these get corrected or
+ * expanded going forward, without needing a code change or redeploy. Keep every answer here
+ * grounded in GLO_APPROVED_FACTS (src/facts.ts) - this table bypasses the AI, not the facts
+ * policy, so it still must never state a fee figure. */
+const FAQ_SEED: Array<{ id: string; keywords: string[]; question: string; answer: string }> = [
+  {
+    id: "age-eligibility",
+    keywords: [
+      "what age",
+      "which age",
+      "minimum age",
+      "age limit",
+      "age criteria",
+      "age eligib",
+      "too young",
+      "old enough",
+    ],
+    question: "What age can my child join?",
+    answer:
+      "Playgroup is from 18 months, Nursery from 3 years, Jr. KG from 4 years, and Sr. KG from 5 years - measured as of 1st April of the academic year. These are ideal bands, so a staff member will confirm the exact class based on your child's date of birth.",
+  },
+  {
+    id: "classes-offered",
+    keywords: ["which classes", "what classes", "how many classes", "classes do you have", "grades do you have"],
+    question: "What classes do you have?",
+    answer:
+      "We have four classes: Playgroup, Nursery, Jr. KG, and Sr. KG, plus a separate Daycare program.",
+  },
+  {
+    id: "curriculum",
+    keywords: ["curriculum", "medium of instruction", "what do you teach", "what will my child learn"],
+    question: "What's the curriculum / medium of instruction?",
+    answer:
+      "We follow a play-based early-years curriculum. English is the medium of instruction, though Assamese/Hindi/English are all fine for talking with parents. Children start alphabet and number recognition from Playgroup, and read and write independently by the time they finish Sr. KG.",
+  },
+  {
+    id: "location",
+    keywords: ["where are you located", "your address", "school address", "where is the school", "location", "google maps", "map location"],
+    question: "Where are you located?",
+    answer:
+      "We're at Bylane 3, Baroholia, Tezpur, Assam. Here's our Google Maps location: https://maps.app.goo.gl/rsHjmAdNVXp3MCqBA",
+  },
+  {
+    id: "visit-tour",
+    keywords: ["can we visit", "school tour", "want to visit", "see the campus", "come and see"],
+    question: "Can we visit the school?",
+    answer:
+      "Of course! Visits happen 1:00pm-3:00pm, by appointment. When are you planning to visit? We'll schedule it and mark our calendar.",
+  },
+  {
+    id: "office-hours",
+    keywords: ["office hours", "when are you open", "what are your hours", "office timing", "school timing", "school hours", "daycare timing", "daycare hours"],
+    question: "What are your hours?",
+    answer:
+      "School timings (Playgroup/Nursery/Jr. KG/Sr. KG) are 9:30am-12:30pm. Daycare is 8:30am-5:30pm. Our office hours are 9:00am-4:00pm.",
+  },
+  {
+    id: "student-teacher-ratio",
+    keywords: ["teacher ratio", "student ratio", "staff ratio", "student-teacher", "students per teacher", "children per teacher"],
+    question: "What's your student-teacher ratio?",
+    answer: "Our student-teacher ratio is 5:1.",
+  },
+];
+
+async function seedFaqEntries(): Promise<void> {
+  for (const entry of FAQ_SEED) {
+    await getPool().query(
+      `INSERT INTO faq_entries (id, keywords, question, answer) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (id) DO NOTHING`,
+      [entry.id, entry.keywords, entry.question, entry.answer]
+    );
+  }
+}
+
+export interface FaqEntry {
+  id: string;
+  keywords: string[];
+  question: string;
+  answer: string;
+}
+
+/** Pulled fresh on every message rather than cached in memory, so an edit made directly in the
+ * database (e.g. by Tirth asking Claude to update an answer) takes effect immediately without a
+ * restart - at Phase 0's traffic this extra query is negligible. */
+export async function getActiveFaqEntries(): Promise<FaqEntry[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ id: string; keywords: string[]; question: string; answer: string }>(
+    `SELECT id, keywords, question, answer FROM faq_entries WHERE active = true`
+  );
+  return rows;
 }
 
 export interface StoredMessage {
