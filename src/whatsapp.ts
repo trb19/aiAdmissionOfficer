@@ -9,6 +9,12 @@ export interface InboundMessage {
   from: string; // E.164-ish, no leading +, as Meta sends it
   text: string;
   timestamp: string;
+  // The display name on the sender's WhatsApp account, e.g. "Priya Sharma" - Meta includes this in
+  // every webhook payload's "contacts" array, so the bot can address a parent by name without ever
+  // having to ask for it. Not guaranteed accurate (it's whatever name they've set on WhatsApp, not
+  // a verified identity - could be a nickname, a child's name, or a shared family phone), so this
+  // is used as a warm touch, never as a fact recorded anywhere that matters.
+  parentName?: string;
 }
 
 /** Meta's webhook fires for every kind of event (message status updates, template events, etc),
@@ -23,13 +29,17 @@ export function extractInboundMessages(body: unknown): InboundMessage[] {
     for (const change of changes) {
       const value = change?.value;
       const rawMessages = value?.messages ?? [];
+      const contacts = value?.contacts ?? [];
+
       for (const msg of rawMessages) {
         if (msg?.type === "text" && msg?.text?.body) {
+          const contact = contacts.find((c: any) => c?.wa_id === msg.from);
           messages.push({
             messageId: msg.id,
             from: msg.from,
             text: msg.text.body,
             timestamp: msg.timestamp,
+            parentName: contact?.profile?.name || undefined,
           });
         }
         // Non-text message types (image, audio, location, interactive button replies, etc.) are
