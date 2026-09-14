@@ -1,7 +1,8 @@
 // Quick logic sanity check that needs no real credentials - not a real test suite (no framework),
 // just a fast way to catch an obviously broken classifier or payload parser before real testing.
-import { classifyMessage } from "./ai.js";
+import { classifyMessage, feeRedirectReply, needsIntake, MAX_INTAKE_ATTEMPTS } from "./ai.js";
 import { extractInboundMessages } from "./whatsapp.js";
+import type { FamilyProfile } from "./db.js";
 
 function assertEqual(actual: unknown, expected: unknown, label: string) {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -38,5 +39,45 @@ const statusOnlyPayload = {
   entry: [{ changes: [{ value: { statuses: [{ id: "wamid.456", status: "delivered" }] } }] }],
 };
 assertEqual(extractInboundMessages(statusOnlyPayload).length, 0, "ignores status-only webhook events");
+
+const payloadWithContact = {
+  entry: [
+    {
+      changes: [
+        {
+          value: {
+            contacts: [{ wa_id: "919876543210", profile: { name: "Priya Sharma" } }],
+            messages: [
+              { id: "wamid.789", from: "919876543210", timestamp: "1700000000", type: "text", text: { body: "Hi" } },
+            ],
+          },
+        },
+      ],
+    },
+  ],
+};
+assertEqual(
+  extractInboundMessages(payloadWithContact)[0]?.parentName,
+  "Priya Sharma",
+  "captures parent's WhatsApp display name from the contacts array"
+);
+assertEqual(extracted[0]?.parentName, undefined, "parentName is undefined when no contacts array is present");
+
+const emptyProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: 0 };
+const knownProfile: FamilyProfile = { parentName: "Priya", childName: "Aarav", childAge: "3", intakeAttempts: 1 };
+const exhaustedProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: MAX_INTAKE_ATTEMPTS };
+
+assertEqual(needsIntake(emptyProfile), true, "needsIntake is true when child name/age unknown and attempts remain");
+assertEqual(needsIntake(knownProfile), false, "needsIntake is false once child name and age are both known");
+assertEqual(needsIntake(exhaustedProfile), false, "needsIntake is false once MAX_INTAKE_ATTEMPTS is reached");
+
+const feeReplyUnknown = feeRedirectReply(emptyProfile);
+assertEqual(/\d{6,}/.test(feeReplyUnknown), false, "fee reply never contains a phone number when intake is still needed");
+assertEqual(feeReplyUnknown.toLowerCase().includes("name"), true, "fee reply asks for child's name when unknown");
+
+const feeReplyKnown = feeRedirectReply(knownProfile);
+assertEqual(/\d{6,}/.test(feeReplyKnown), false, "fee reply never contains a phone number once child info is known");
+assertEqual(feeReplyKnown.includes("Aarav"), true, "fee reply uses the child's name once known");
+assertEqual(feeReplyKnown.toLowerCase().includes("what's"), false, "fee reply does not re-ask once child info is known");
 
 console.log("Self-test complete.");
