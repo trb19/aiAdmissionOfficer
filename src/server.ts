@@ -9,7 +9,9 @@ import {
   summarizeConversation,
   extractChildInfo,
   needsIntake,
+  intakeAskSuffix,
 } from "./ai.js";
+import { matchFaq } from "./faq.js";
 import { logEnquiry, upsertConversationSummary } from "./sheets.js";
 import {
   getRecentHistory,
@@ -17,6 +19,7 @@ import {
   getFamilyProfile,
   upsertFamilyProfile,
   incrementIntakeAttempts,
+  getActiveFaqEntries,
 } from "./db.js";
 
 const app = express();
@@ -92,7 +95,17 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
     } else if (classification === "HUMAN_REQUEST") {
       reply = humanHandoffReply(config.escalationPhone);
     } else {
-      reply = await generateReply(message.text, history, profile);
+      // Check the pre-approved FAQ cache before spending a Gemini call - see src/faq.ts and the
+      // faq_entries seed in src/db.ts. A hit answers instantly from the database; a miss falls
+      // through to the AI exactly as before.
+      const faqEntries = await getActiveFaqEntries();
+      const faqMatch = matchFaq(message.text, faqEntries);
+      if (faqMatch) {
+        const suffix = intakeAskSuffix(profile);
+        reply = suffix ? `${faqMatch.answer} ${suffix}` : faqMatch.answer;
+      } else {
+        reply = await generateReply(message.text, history, profile);
+      }
     }
 
     await sendWhatsAppText(message.from, reply);
