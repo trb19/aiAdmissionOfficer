@@ -16,11 +16,15 @@ three things to do, and replies:
   of the AI's context entirely as a second line of defense.
 - **Asking for a person** → a scripted reply with the phone number and office hours.
 - **Everything else** → Gemini answers from a fixed set of GLO-approved facts (`src/facts.ts`),
-  with instructions to say "not sure, please call" rather than guess.
+  using the parent's recent message history (`src/db.ts`) so it can follow a back-and-forth
+  instead of treating every message as a fresh conversation, with instructions to say "not sure,
+  please call" rather than guess.
 
 Every enquiry — question and reply — is logged as a new row in the existing "GLO Preschool -
 Admission CRM" Google Sheet, with a classification column so staff can filter for fee/human-request
-rows that likely need a follow-up call.
+rows that likely need a follow-up call. A second "Conversations" tab (created automatically) keeps
+one row per parent phone number with a short running summary of that whole chat, refreshed after
+every message, for a quick-glance view instead of scrolling through every individual row.
 
 ## What it deliberately does NOT do yet
 
@@ -28,9 +32,10 @@ No visit booking, no lead scoring/CRM state machine, no multi-tenant support (th
 GLO), no message templates or proactive follow-ups, no handling of images/voice notes/attachments
 (a message like that is simply not picked up — see `extractInboundMessages` in `src/whatsapp.ts`).
 No persistent dedup store — message-ID dedup is in-memory, which is fine for one instance and gets
-reset on every restart (documented in `src/server.ts`, this is a known Phase 1 upgrade). These are
-intentional cuts to keep Phase 0 buildable in days, not months — see the roadmap doc for what
-Phase 1 adds back in.
+reset on every restart (documented in `src/server.ts`, this is a known Phase 1 upgrade; note this
+is separate from conversation *history*, which now lives in Postgres and does survive restarts).
+These are intentional cuts to keep Phase 0 buildable in days, not months — see the roadmap doc for
+what Phase 1 adds back in.
 
 ## Setup
 
@@ -69,7 +74,23 @@ login) with access to just the one sheet:
    account's email address (looks like `something@your-project.iam.gserviceaccount.com`, found in
    the downloaded JSON as `client_email`) with Editor access.
 
-### 5. Run it locally and expose it to the internet for testing
+On a host with no persistent disk (Render's free tier, for example), skip saving the file locally
+and instead paste the entire JSON key's contents as one line into `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`
+— see the comment in `.env.example`. That env var takes priority over the file path when both are
+set.
+
+### 5. Conversation memory (Postgres)
+
+The bot keeps a short history of each parent's conversation so it can handle follow-up questions
+instead of answering every message cold. This is stored in Postgres, not in-memory, so it survives
+restarts and Render's free-tier spin-downs.
+
+1. In the Render dashboard: New > PostgreSQL, free tier is fine for Phase 0's volume.
+2. Copy its "Internal Database URL" (if the bot runs on Render too) or "External Database URL"
+   (for local dev) into `DATABASE_URL`.
+3. No manual schema setup needed — `src/db.ts` creates its tables automatically on first use.
+
+### 6. Run it locally and expose it to the internet for testing
 
 ```
 npm run dev
@@ -84,7 +105,7 @@ reconfiguring in Meta each time. For anything beyond quick local testing, deploy
 that gives a stable URL (Render, Railway, Fly.io all have workable free/cheap tiers) rather than
 relying on a tunnel long-term.
 
-### 6. Configure the webhook in Meta
+### 7. Configure the webhook in Meta
 
 In the "Glo Messenger" app (Meta for Developers) → WhatsApp → Configuration → Webhooks:
 
@@ -96,7 +117,10 @@ Also: the app needs to be **published** (Meta for Developers > App Settings) bef
 any real webhook traffic — an unpublished app only gets test pings from the dashboard, not real
 messages. See `meta-whatsapp-setup-checklist.md` for the current status of this.
 
-### 7. Test end to end
+### 8. Test end to end
 
-Send a WhatsApp message to GLO's number from your own phone and confirm: you get a reply, and a
-new row appears in the "Admission Queries" tab of the CRM sheet.
+Send a WhatsApp message to GLO's number from your own phone and confirm: you get a reply, a new
+row appears in the "Admission Queries" tab of the CRM sheet, and a row for that phone number
+appears (or updates) in the "Conversations" tab. Then send a follow-up message that only makes
+sense with context (e.g. ask about age eligibility, then ask "what about for Daycare instead?")
+and confirm the reply actually understands what "instead" refers to.
