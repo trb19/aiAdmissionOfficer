@@ -1,6 +1,12 @@
 import express from "express";
 import { config } from "./config.js";
-import { extractInboundMessages, sendWhatsAppText, type InboundMessage } from "./whatsapp.js";
+import {
+  extractInboundMessages,
+  sendWhatsAppText,
+  sendWhatsAppTemplate,
+  type InboundMessage,
+  type TemplateBodyParam,
+} from "./whatsapp.js";
 import {
   classifyMessage,
   feeRedirectReply,
@@ -207,6 +213,45 @@ async function processMessage(message: InboundMessage): Promise<void> {
 
   await upsertConversationSummary(message.from, summary, classification);
 }
+
+// The CRM's planned "Send WhatsApp" button hits this - it's what lets staff message a parent
+// OUTSIDE the 24-hour reply window (a follow-up days later, a visit reminder), which
+// sendWhatsAppText can't do. Kept separate from the webhook's reply path on purpose: this is
+// staff-initiated, not triggered by an inbound message.
+app.post("/send-template", express.json(), async (req, res) => {
+  // Soft-gated behind CRM_SEND_SECRET (see config.ts) - not left open the way /webhook is, since
+  // this one can push a message to a parent at any time, not just reply to one they sent.
+  if (config.crm.sendSecret) {
+    if (req.header("x-api-key") !== config.crm.sendSecret) {
+      res.status(401).json({ error: "Missing or invalid x-api-key" });
+      return;
+    }
+  } else {
+    console.warn(
+      "POST /send-template called with no CRM_SEND_SECRET configured - anyone with this URL can send templates. Set CRM_SEND_SECRET on Render once done testing."
+    );
+  }
+
+  const { phone, templateName, languageCode, bodyParams } = req.body as {
+    phone?: string;
+    templateName?: string;
+    languageCode?: string;
+    bodyParams?: TemplateBodyParam[];
+  };
+
+  if (!phone || !templateName || !languageCode) {
+    res.status(400).json({ error: "phone, templateName, and languageCode are required" });
+    return;
+  }
+
+  try {
+    await sendWhatsAppTemplate(phone, templateName, languageCode, bodyParams ?? []);
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("Error sending WhatsApp template:", err);
+    res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
 
 app.listen(config.port, () => {
   console.log(`GLO admissions bot listening on port ${config.port}`);
