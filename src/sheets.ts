@@ -124,7 +124,7 @@ export async function upsertConversationSummary(
     await ensureTab(sheets, config.sheets.conversationsTabName, CONVERSATIONS_HEADER);
 
     const rowIndex = await findConversationRow(sheets, phone);
-    const now = new Date().toISOString();
+    const now = formatIstDateTime(new Date());
     const values = [[phone, now, summary, lastClassification]];
 
     if (rowIndex === -1) {
@@ -175,10 +175,26 @@ const CRM_HEADER = [
 
 /** Matches the sheet's own "14-Sep-2026" style dates, in IST (the school's timezone) rather than
  * whatever timezone the server happens to run in. */
-function formatCrmDate(d: Date): string {
+export function formatCrmDate(d: Date): string {
   return d
     .toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" })
     .replace(/ /g, "-");
+}
+
+/** Full date + time in IST, for the columns that need a timestamp rather than just a day (the
+ * Conversations tab's "Last Updated", the enquiry log's "Timestamp"). Staff read these sheets
+ * sitting in Tezpur, not UTC - a raw `.toISOString()` timestamp reads several hours off from what
+ * actually happened locally, which is exactly the kind of thing that quietly misleads someone
+ * checking "did we reply to this parent this morning or last night". Built on formatCrmDate so the
+ * date portion matches the rest of the sheet exactly. */
+export function formatIstDateTime(d: Date): string {
+  const time = d.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "Asia/Kolkata",
+  });
+  return `${formatCrmDate(d)} ${time}`;
 }
 
 /** Existing CRM rows use plain digit strings in all sorts of shapes (with/without +91, spaces).
@@ -196,20 +212,31 @@ export interface CrmLeadUpdate {
   /** Plain-English running summary of the WhatsApp conversation so far (same text that goes into
    * the "Conversations" tab). Confirmed with Tirth 15 Sept 2026: Remarks is meant to be kept fresh
    * by the bot so staff can see what's been discussed without opening the Conversations tab.
-   * Refined 15 Sept 2026: rather than overwriting the cell, each new summary is APPENDED as its own
-   * dated line - "15-Sep-2026: <summary>" - so Remarks builds up into a dated log of the whole
-   * relationship over time (phone/visit notes staff add by hand included), which is what actually
-   * helps staff screen a caller quickly. */
+   * Refined 15 Sept 2026: one dated line per CALENDAR DAY (IST) rather than one line per message -
+   * "15-Sep-2026: <summary>" - so Remarks reads as a day-by-day log of the relationship (phone/
+   * visit notes staff add by hand included) instead of a per-message transcript. Every message that
+   * arrives on the same day rewrites that day's line in place with the freshest whole-conversation
+   * summary; a message on a new day adds a new line below it, leaving the previous day's line as
+   * it was. That's what actually helps staff screen a caller quickly. */
   remarks?: string;
 }
 
-/** Appends a dated line to whatever's already in Remarks, rather than replacing it - see the
- * CrmLeadUpdate.remarks doc for why. No-op (returns the existing text unchanged) when there's no
- * new remark to add. */
+/** Folds a new summary into Remarks as one line per calendar day - see the CrmLeadUpdate.remarks
+ * doc for why. If the LAST line already belongs to `today`, it's replaced with the fresh summary
+ * (same day, conversation moved on); otherwise a new dated line is appended below whatever's
+ * already there, so an earlier day's line - or a staff-typed note with no date prefix at all -
+ * is left untouched. No-op when there's no new remark to add. */
 function appendRemark(existing: string, today: string, remark: string | undefined): string {
   if (!remark) return existing;
   const entry = `${today}: ${remark}`;
-  return existing ? `${existing}\n${entry}` : entry;
+  if (!existing) return entry;
+
+  const lines = existing.split("\n");
+  if (lines[lines.length - 1].startsWith(`${today}: `)) {
+    lines[lines.length - 1] = entry;
+    return lines.join("\n");
+  }
+  return `${existing}\n${entry}`;
 }
 
 /** Adds or updates one row per family in the shared "CRM" tab, keyed by phone number - one lead,

@@ -1,6 +1,6 @@
 import express from "express";
 import { config } from "./config.js";
-import { extractInboundMessages, sendWhatsAppText } from "./whatsapp.js";
+import { extractInboundMessages, sendWhatsAppText, type InboundMessage } from "./whatsapp.js";
 import {
   classifyMessage,
   feeRedirectReply,
@@ -12,7 +12,7 @@ import {
   intakeAskSuffix,
 } from "./ai.js";
 import { matchFaq } from "./faq.js";
-import { logEnquiry, upsertConversationSummary, upsertCrmLead } from "./sheets.js";
+import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime } from "./sheets.js";
 import {
   getRecentHistory,
   saveMessage,
@@ -31,6 +31,36 @@ app.use(express.json());
 // this needs to move to a real store (a small Postgres/Redis table keyed by message ID). That's a
 // deliberate, documented Phase 1 upgrade, not an oversight.
 const seenMessageIds = new Set<string>();
+
+// Per-phone lock so two messages from the SAME parent arriving close together (a fast follow-up
+// text, or Meta delivering them a few seconds apart) never get processed concurrently. Without
+// this, two overlapping calls can each read "no CRM/Conversations row for this phone yet" before
+// either has finished writing theirs - producing two rows for one person (root-caused 15 Sept
+// 2026: Aditya, 919444610876, got duplicated in both tabs because his first two messages landed
+// 7 seconds apart). A phone's queue is a promise chain: each new message for that phone waits for
+// the previous one to finish (success or failure) before it starts. Messages from DIFFERENT
+// phones still run fully in parallel - this only serializes a single family's own messages.
+// Same documented-risk category as seenMessageIds above: process-memory only, and the map grows
+// for as long as the process runs (an entry per phone number ever seen, not per message) - fine
+// at Phase 0 volume, a Phase 1 item to revisit if the number of distinct families gets large.
+const phoneQueues = new Map<string, Promise<void>>();
+
+function runSerializedByPhone(phone: string, task: () => Promise<void>): Promise<void> {
+  const previous = phoneQueues.get(phone) ?? Promise.resolve();
+  // Chain onto the previous task regardless of whether it succeeded or failed, so one bad message
+  // can't wedge every later message from that phone forever.
+  const next = previous.then(task, task);
+  // What's stored is just "has the queue caught up" - never rejects, so the NEXT message's chain
+  // isn't torn down by an error two messages back.
+  phoneQueues.set(
+    phone,
+    next.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return next;
+}
 
 app.get("/health", (_req, res) => {
   res.status(200).send("ok");
@@ -69,103 +99,113 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
     }
     seenMessageIds.add(message.messageId);
 
-    // The WhatsApp display name arrives on every message but only needs to be stored once - safe
-    // to call every time regardless, upsertFamilyProfile leaves other fields untouched.
-    if (message.parentName) {
-      await upsertFamilyProfile(message.from, { parentName: message.parentName });
-    }
-
-    const classification = classifyMessage(message.text);
-
-    // Pulled once per message and reused for both the reply and the running summary below - this
-    // is the bot's actual memory of the conversation so far (see src/db.ts), separate from the
-    // Google Sheet's human-facing log.
-    const history = await getRecentHistory(message.from);
-    const profile = await getFamilyProfile(message.from);
-
-    // Whether THIS reply is allowed to ask for the child's name/age, decided once up front from
-    // the profile as it stood before this turn - both feeRedirectReply and generateReply make the
-    // same decision independently, so this is what tells us afterwards whether to count it as an
-    // attempt (see MAX_INTAKE_ATTEMPTS in ai.ts).
-    const askingForIntake = needsIntake(profile);
-
-    let reply: string;
-    if (classification === "FEE_QUESTION") {
-      reply = feeRedirectReply(profile);
-    } else if (classification === "HUMAN_REQUEST") {
-      reply = humanHandoffReply(config.escalationPhone);
-    } else {
-      // Check the pre-approved FAQ cache before spending a Gemini call - see src/faq.ts and the
-      // faq_entries seed in src/db.ts. A hit answers instantly from the database; a miss falls
-      // through to the AI exactly as before.
-      const faqEntries = await getActiveFaqEntries();
-      const faqMatch = matchFaq(message.text, faqEntries);
-      if (faqMatch) {
-        const suffix = intakeAskSuffix(profile);
-        reply = suffix ? `${faqMatch.answer} ${suffix}` : faqMatch.answer;
-      } else {
-        reply = await generateReply(message.text, history, profile);
-      }
-    }
-
-    await sendWhatsAppText(message.from, reply);
-
-    if (askingForIntake && classification !== "HUMAN_REQUEST") {
-      await incrementIntakeAttempts(message.from);
-    }
-
-    await saveMessage(message.from, "user", message.text);
-    await saveMessage(message.from, "model", reply);
-
-    // Pick up the child's name/age the moment either is shared - whether that's a direct answer to
-    // being asked, or volunteered unprompted. Only bothers with the extra Gemini call while
-    // there's still something missing to find.
-    let latestChildName = profile.childName ?? undefined;
-    let latestChildAge = profile.childAge ?? undefined;
-    if (!profile.childName || !profile.childAge) {
-      const precedingAssistantMessage =
-        history.length > 0 && history[history.length - 1].role === "model"
-          ? history[history.length - 1].content
-          : undefined;
-      const extracted = await extractChildInfo(message.text, precedingAssistantMessage);
-      if (extracted.childName || extracted.childAge) {
-        await upsertFamilyProfile(message.from, {
-          ...(extracted.childName ? { childName: extracted.childName } : {}),
-          ...(extracted.childAge ? { childAge: extracted.childAge } : {}),
-        });
-      }
-      latestChildName = extracted.childName ?? latestChildName;
-      latestChildAge = extracted.childAge ?? latestChildAge;
-    }
-
-    await logEnquiry({
-      timestamp: new Date(Number(message.timestamp) * 1000).toISOString(),
-      phone: message.from,
-      question: message.text,
-      aiAnswer: reply,
-      classification,
+    // Queued per phone (see phoneQueues above) rather than awaited directly here - this still lets
+    // messages from different families process in parallel, it just stops this one family's
+    // messages from racing each other's Sheets/DB writes.
+    void runSerializedByPhone(message.from, () => processMessage(message)).catch((err) => {
+      console.error("Error processing message:", err);
     });
-
-    // Plain-English running summary of the whole chat so far. Computed once here (using the full
-    // history including the turn that was just saved) and reused for both the "Conversations" tab
-    // and the CRM tab's Remarks column, so staff see the same up-to-date summary in either place.
-    const fullHistory = [...history, { role: "user" as const, content: message.text }, { role: "model" as const, content: reply }];
-    const summary = await summarizeConversation(fullHistory);
-
-    // GLO's team works leads out of the shared "CRM" tab regardless of source (phone, visit, ads)
-    // - see src/sheets.ts's upsertCrmLead for why this is safe to call on every message without
-    // clobbering a staff member's own follow-up notes (Remarks aside - that's kept in sync with
-    // the summary below on purpose).
-    await upsertCrmLead({
-      phone: message.from,
-      parentName: message.parentName ?? profile.parentName ?? undefined,
-      childName: latestChildName,
-      childAge: latestChildAge,
-      remarks: summary,
-    });
-
-    await upsertConversationSummary(message.from, summary, classification);
   }
+}
+
+async function processMessage(message: InboundMessage): Promise<void> {
+  // The WhatsApp display name arrives on every message but only needs to be stored once - safe
+  // to call every time regardless, upsertFamilyProfile leaves other fields untouched.
+  if (message.parentName) {
+    await upsertFamilyProfile(message.from, { parentName: message.parentName });
+  }
+
+  const classification = classifyMessage(message.text);
+
+  // Pulled once per message and reused for both the reply and the running summary below - this
+  // is the bot's actual memory of the conversation so far (see src/db.ts), separate from the
+  // Google Sheet's human-facing log.
+  const history = await getRecentHistory(message.from);
+  const profile = await getFamilyProfile(message.from);
+
+  // Whether THIS reply is allowed to ask for the child's name/age, decided once up front from
+  // the profile as it stood before this turn - both feeRedirectReply and generateReply make the
+  // same decision independently, so this is what tells us afterwards whether to count it as an
+  // attempt (see MAX_INTAKE_ATTEMPTS in ai.ts).
+  const askingForIntake = needsIntake(profile);
+
+  let reply: string;
+  if (classification === "FEE_QUESTION") {
+    reply = feeRedirectReply(profile);
+  } else if (classification === "HUMAN_REQUEST") {
+    reply = humanHandoffReply(config.escalationPhone);
+  } else {
+    // Check the pre-approved FAQ cache before spending a Gemini call - see src/faq.ts and the
+    // faq_entries seed in src/db.ts. A hit answers instantly from the database; a miss falls
+    // through to the AI exactly as before.
+    const faqEntries = await getActiveFaqEntries();
+    const faqMatch = matchFaq(message.text, faqEntries);
+    if (faqMatch) {
+      const suffix = intakeAskSuffix(profile);
+      reply = suffix ? `${faqMatch.answer} ${suffix}` : faqMatch.answer;
+    } else {
+      reply = await generateReply(message.text, history, profile);
+    }
+  }
+
+  await sendWhatsAppText(message.from, reply);
+
+  if (askingForIntake && classification !== "HUMAN_REQUEST") {
+    await incrementIntakeAttempts(message.from);
+  }
+
+  await saveMessage(message.from, "user", message.text);
+  await saveMessage(message.from, "model", reply);
+
+  // Pick up the child's name/age the moment either is shared - whether that's a direct answer to
+  // being asked, or volunteered unprompted. Only bothers with the extra Gemini call while
+  // there's still something missing to find.
+  let latestChildName = profile.childName ?? undefined;
+  let latestChildAge = profile.childAge ?? undefined;
+  if (!profile.childName || !profile.childAge) {
+    const precedingAssistantMessage =
+      history.length > 0 && history[history.length - 1].role === "model"
+        ? history[history.length - 1].content
+        : undefined;
+    const extracted = await extractChildInfo(message.text, precedingAssistantMessage);
+    if (extracted.childName || extracted.childAge) {
+      await upsertFamilyProfile(message.from, {
+        ...(extracted.childName ? { childName: extracted.childName } : {}),
+        ...(extracted.childAge ? { childAge: extracted.childAge } : {}),
+      });
+    }
+    latestChildName = extracted.childName ?? latestChildName;
+    latestChildAge = extracted.childAge ?? latestChildAge;
+  }
+
+  await logEnquiry({
+    // IST, not the server's own UTC clock - see formatIstDateTime for why.
+    timestamp: formatIstDateTime(new Date(Number(message.timestamp) * 1000)),
+    phone: message.from,
+    question: message.text,
+    aiAnswer: reply,
+    classification,
+  });
+
+  // Plain-English running summary of the whole chat so far. Computed once here (using the full
+  // history including the turn that was just saved) and reused for both the "Conversations" tab
+  // and the CRM tab's Remarks column, so staff see the same up-to-date summary in either place.
+  const fullHistory = [...history, { role: "user" as const, content: message.text }, { role: "model" as const, content: reply }];
+  const summary = await summarizeConversation(fullHistory);
+
+  // GLO's team works leads out of the shared "CRM" tab regardless of source (phone, visit, ads)
+  // - see src/sheets.ts's upsertCrmLead for why this is safe to call on every message without
+  // clobbering a staff member's own follow-up notes (Remarks aside - that's kept in sync with
+  // the summary below on purpose).
+  await upsertCrmLead({
+    phone: message.from,
+    parentName: message.parentName ?? profile.parentName ?? undefined,
+    childName: latestChildName,
+    childAge: latestChildAge,
+    remarks: summary,
+  });
+
+  await upsertConversationSummary(message.from, summary, classification);
 }
 
 app.listen(config.port, () => {
