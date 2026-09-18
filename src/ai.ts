@@ -83,11 +83,34 @@ function profileContext(profile: FamilyProfile): string {
   return `${parentLine}\n${childLine}`;
 }
 
+/** Gemini has no built-in sense of the actual current date - left to its own devices it guesses,
+ * and root-caused 16 Sept 2026: a parent asked "are you open today?" and the model picked Sunday
+ * out of thin air (the one day facts.ts happens to name), on an ordinary Wednesday. Computed fresh
+ * on every call (never cached) and in IST - GLO's own timezone, not the server's UTC clock - so
+ * "today"/"tomorrow"/"is it Sunday" questions are answered against the real date, not a guess. */
+function currentIstContextLine(): string {
+  const weekdayAndDate = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+  return (
+    `Today's actual date right now: ${weekdayAndDate} (Indian Standard Time, GLO's own timezone). ` +
+    `Treat this as ground truth for any question involving "today", "tomorrow", "this weekend", or a ` +
+    `specific day of the week (e.g. whether GLO is open for a visit today) - never guess or assume a ` +
+    `date/day on your own.`
+  );
+}
+
 function buildSystemPrompt(profile: FamilyProfile): string {
   return `
 You are GLO Preschool & Daycare's WhatsApp admissions assistant, chatting with a parent enquiring
 about admissions. Talk like a warm, switched-on staff member texting on WhatsApp - not a corporate
 bot. This is a pilot with a limited scope - follow these rules exactly:
+
+${currentIstContextLine()}
 
 Style:
 - Short sentences, one idea each. Default to 1-2 sentences per reply; use a 3rd only if genuinely needed.

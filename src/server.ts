@@ -5,7 +5,6 @@ import {
   sendWhatsAppText,
   sendWhatsAppTemplate,
   type InboundMessage,
-  type TemplateBodyParam,
 } from "./whatsapp.js";
 import {
   classifyMessage,
@@ -232,11 +231,14 @@ app.post("/send-template", express.json(), async (req, res) => {
     );
   }
 
-  const { phone, templateName, languageCode, bodyParams } = req.body as {
+  // bodyValues is plain strings in order, e.g. ["Tirth"] for a template whose body reads
+  // "Hi {{1}}, ..." - see the doc comment on sendWhatsAppTemplate for why it's kept this simple
+  // rather than asking the caller to build Meta's own parameter objects.
+  const { phone, templateName, languageCode, bodyValues } = req.body as {
     phone?: string;
     templateName?: string;
     languageCode?: string;
-    bodyParams?: TemplateBodyParam[];
+    bodyValues?: string[];
   };
 
   if (!phone || !templateName || !languageCode) {
@@ -245,7 +247,7 @@ app.post("/send-template", express.json(), async (req, res) => {
   }
 
   try {
-    await sendWhatsAppTemplate(phone, templateName, languageCode, bodyParams ?? []);
+    await sendWhatsAppTemplate(phone, templateName, languageCode, bodyValues ?? []);
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("Error sending WhatsApp template:", err);
