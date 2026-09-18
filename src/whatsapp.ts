@@ -81,21 +81,33 @@ export async function sendWhatsAppText(to: string, body: string): Promise<void> 
  * in Meta's WhatsApp Manager (the numeric template ID shown there, e.g. 2850457925307994, is NOT
  * what goes here - Meta's send API addresses templates by name + language, not by that ID).
  *
- * `bodyValues` fills the template's {{1}}, {{2}}... placeholders IN ORDER, as plain strings - e.g.
- * ["Tirth"] for a template whose body is "Hi {{1}}, ...". Pass [] for a template with no
- * variables (like the built-in "hello_world" sample). Callers never have to know Meta's own
- * verbose parameter shape ({ type: "text", text: "..." } per value) - this function builds that
- * from the plain strings. Root-caused 18 Sept 2026: an earlier version of this function took that
- * shape directly from callers and it's easy to get subtly wrong (Meta rejected a first attempt
- * that omitted the required "type" field with a none-too-obvious 400) - not something a curl
- * command or the CRM's Apps Script should have to get exactly right by hand. */
+ * `bodyVariables` fills in the template's placeholders and comes in TWO shapes, because Meta's
+ * templates do (root-caused 18 Sept 2026 testing against the real "send_hi" template, which uses
+ * the newer named style and rejected the positional shape with "Parameter name is missing or
+ * empty"):
+ *  - a template written with {{1}}, {{2}}... (positional) takes a plain array IN ORDER, e.g.
+ *    ["Tirth"] for a body like "Hi {{1}}, ...".
+ *  - a template written with {{customer_name}} etc (named - what WhatsApp Manager's template
+ *    editor produces by default now) takes a plain object keyed by those names, e.g.
+ *    { customer_name: "Tirth" } for a body like "Hi {{customer_name}}, ...".
+ * Pass [] (or omit) for a template with no variables (like the built-in "hello_world" sample).
+ * Either way, callers never have to know Meta's own verbose parameter object shape
+ * ({ type: "text", text: "...", parameter_name?: "..." } per value) - this function builds that. */
 export async function sendWhatsAppTemplate(
   to: string,
   name: string,
   languageCode: string,
-  bodyValues: string[] = []
+  bodyVariables: string[] | Record<string, string> = []
 ): Promise<void> {
   const url = `${GRAPH_BASE}/${config.whatsapp.graphVersion}/${config.whatsapp.phoneNumberId}/messages`;
+
+  const parameters = Array.isArray(bodyVariables)
+    ? bodyVariables.map((text) => ({ type: "text", text }))
+    : Object.entries(bodyVariables).map(([parameter_name, text]) => ({
+        type: "text",
+        parameter_name,
+        text,
+      }));
 
   const res = await fetch(url, {
     method: "POST",
@@ -113,16 +125,7 @@ export async function sendWhatsAppTemplate(
         // Omit the "components" array entirely for a no-variable template - Meta rejects an empty
         // body component on some template shapes, so this only gets included when there's
         // something to fill in.
-        ...(bodyValues.length > 0
-          ? {
-              components: [
-                {
-                  type: "body",
-                  parameters: bodyValues.map((text) => ({ type: "text", text })),
-                },
-              ],
-            }
-          : {}),
+        ...(parameters.length > 0 ? { components: [{ type: "body", parameters }] } : {}),
       },
     }),
   });

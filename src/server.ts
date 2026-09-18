@@ -231,14 +231,16 @@ app.post("/send-template", express.json(), async (req, res) => {
     );
   }
 
-  // bodyValues is plain strings in order, e.g. ["Tirth"] for a template whose body reads
-  // "Hi {{1}}, ..." - see the doc comment on sendWhatsAppTemplate for why it's kept this simple
-  // rather than asking the caller to build Meta's own parameter objects.
-  const { phone, templateName, languageCode, bodyValues } = req.body as {
+  // bodyVariables is EITHER a plain array (positional {{1}}, {{2}} templates, e.g. ["Tirth"]) OR a
+  // plain object keyed by name (named {{customer_name}} templates, e.g. {"customer_name":"Tirth"})
+  // - whichever shape matches the template being sent. See the doc comment on sendWhatsAppTemplate
+  // for why it's kept this simple rather than asking the caller to build Meta's own parameter
+  // objects (a mismatch here is exactly what Meta rejected during testing on 18 Sept 2026).
+  const { phone, templateName, languageCode, bodyVariables } = req.body as {
     phone?: string;
     templateName?: string;
     languageCode?: string;
-    bodyValues?: string[];
+    bodyVariables?: string[] | Record<string, string>;
   };
 
   if (!phone || !templateName || !languageCode) {
@@ -247,7 +249,7 @@ app.post("/send-template", express.json(), async (req, res) => {
   }
 
   try {
-    await sendWhatsAppTemplate(phone, templateName, languageCode, bodyValues ?? []);
+    await sendWhatsAppTemplate(phone, templateName, languageCode, bodyVariables ?? []);
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("Error sending WhatsApp template:", err);
