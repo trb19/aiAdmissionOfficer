@@ -135,9 +135,12 @@ Approved facts:
 }
 
 /** Turns stored history rows into the shape Gemini's chat API expects. History is trimmed to
- * recent turns by src/db.ts before it ever reaches here - this function just reformats. */
+ * recent turns by src/db.ts before it ever reaches here - this function just reformats. Gemini's
+ * API only accepts "user" or "model" as a role, so a "staff" row (a human's manual reply sent
+ * from the CRM chat viewer - see db.ts) is folded into "model": from Gemini's point of view it's
+ * still the assistant side of the conversation, just typed by a person that one time. */
 function toGeminiHistory(history: StoredMessage[]) {
-  return history.map((m) => ({ role: m.role, parts: [{ text: m.content }] }));
+  return history.map((m) => ({ role: m.role === "user" ? "user" : "model", parts: [{ text: m.content }] }));
 }
 
 // --- Gemini call throttling -------------------------------------------------------------------
