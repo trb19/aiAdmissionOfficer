@@ -279,6 +279,11 @@ app.post("/send-template", express.json(), async (req, res) => {
 
   try {
     await sendWhatsAppTemplate(phone, templateName, languageCode, bodyVariables ?? []);
+    // Log this as a staff-side message too, same as /send-message does, so it shows up in the CRM's
+    // chat viewer transcript (getFullConversation) instead of silently vanishing - previously this
+    // endpoint never touched the conversation history at all.
+    await saveMessage(phone, "staff", `WhatsApp template sent: ${templateName}`);
+    await pauseBot(phone, DEFAULT_PAUSE_MINUTES);
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("Error sending WhatsApp template:", err);
