@@ -64,9 +64,9 @@ assertEqual(
 );
 assertEqual(extracted[0]?.parentName, undefined, "parentName is undefined when no contacts array is present");
 
-const emptyProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: 0 };
-const knownProfile: FamilyProfile = { parentName: "Priya", childName: "Aarav", childAge: "3", intakeAttempts: 1 };
-const exhaustedProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: MAX_INTAKE_ATTEMPTS };
+const emptyProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: 0, pausedUntil: null };
+const knownProfile: FamilyProfile = { parentName: "Priya", childName: "Aarav", childAge: "3", intakeAttempts: 1, pausedUntil: null };
+const exhaustedProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: MAX_INTAKE_ATTEMPTS, pausedUntil: null };
 
 assertEqual(needsIntake(emptyProfile), true, "needsIntake is true when child name/age unknown and attempts remain");
 assertEqual(needsIntake(knownProfile), false, "needsIntake is false once child name and age are both known");
