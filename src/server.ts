@@ -20,11 +20,14 @@ import { matchFaq } from "./faq.js";
 import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime } from "./sheets.js";
 import {
   getRecentHistory,
+  getFullConversation,
   saveMessage,
   getFamilyProfile,
   upsertFamilyProfile,
   incrementIntakeAttempts,
   getActiveFaqEntries,
+  isBotPaused,
+  pauseBot,
 } from "./db.js";
 
 const app = express();
@@ -120,13 +123,39 @@ async function processMessage(message: InboundMessage): Promise<void> {
     await upsertFamilyProfile(message.from, { parentName: message.parentName });
   }
 
-  const classification = classifyMessage(message.text);
-
   // Pulled once per message and reused for both the reply and the running summary below - this
   // is the bot's actual memory of the conversation so far (see src/db.ts), separate from the
   // Google Sheet's human-facing log.
   const history = await getRecentHistory(message.from);
   const profile = await getFamilyProfile(message.from);
+
+  if (isBotPaused(profile)) {
+    // A staff member sent a manual reply from the CRM's chat viewer recently (see POST
+    // /send-message below) - stay quiet for this family until that pause expires instead of
+    // talking over them. Still log the inbound message and keep the CRM/sheets in sync, just
+    // without generating or sending an auto-reply.
+    await saveMessage(message.from, "user", message.text);
+    await logEnquiry({
+      timestamp: formatIstDateTime(new Date(Number(message.timestamp) * 1000)),
+      phone: message.from,
+      question: message.text,
+      aiAnswer: "(bot paused - awaiting staff reply)",
+      classification: "HUMAN_HANDLING",
+    });
+    const fullHistory = [...history, { role: "user" as const, content: message.text }];
+    const summary = await summarizeConversation(fullHistory);
+    await upsertCrmLead({
+      phone: message.from,
+      parentName: message.parentName ?? profile.parentName ?? undefined,
+      childName: profile.childName ?? undefined,
+      childAge: profile.childAge ?? undefined,
+      remarks: summary,
+    });
+    await upsertConversationSummary(message.from, summary, "HUMAN_HANDLING");
+    return;
+  }
+
+  const classification = classifyMessage(message.text);
 
   // Whether THIS reply is allowed to ask for the child's name/age, decided once up front from
   // the profile as it stood before this turn - both feeRedirectReply and generateReply make the
@@ -169,7 +198,7 @@ async function processMessage(message: InboundMessage): Promise<void> {
   let latestChildAge = profile.childAge ?? undefined;
   if (!profile.childName || !profile.childAge) {
     const precedingAssistantMessage =
-      history.length > 0 && history[history.length - 1].role === "model"
+      history.length > 0 && history[history.length - 1].role !== "user"
         ? history[history.length - 1].content
         : undefined;
     const extracted = await extractChildInfo(message.text, precedingAssistantMessage);
@@ -253,6 +282,76 @@ app.post("/send-template", express.json(), async (req, res) => {
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("Error sending WhatsApp template:", err);
+    res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+function checkCrmSecret(req: express.Request, res: express.Response): boolean {
+  if (config.crm.sendSecret) {
+    if (req.header("x-api-key") !== config.crm.sendSecret) {
+      res.status(401).json({ error: "Missing or invalid x-api-key" });
+      return false;
+    }
+  } else {
+    console.warn(
+      "CRM endpoint called with no CRM_SEND_SECRET configured - anyone with this URL can use it. Set CRM_SEND_SECRET on Render once done testing."
+    );
+  }
+  return true;
+}
+
+// The CRM's chat-viewer popup hits this to load the full WhatsApp transcript for a lead, plus
+// whether the bot is currently paused for them (see POST /send-message below).
+app.get("/conversation", async (req, res) => {
+  if (!checkCrmSecret(req, res)) return;
+
+  const phone = req.query.phone as string | undefined;
+  if (!phone) {
+    res.status(400).json({ error: "phone query parameter is required" });
+    return;
+  }
+
+  try {
+    const [messages, profile] = await Promise.all([getFullConversation(phone), getFamilyProfile(phone)]);
+    res.status(200).json({
+      ok: true,
+      messages,
+      pausedUntil: profile.pausedUntil,
+      botPaused: isBotPaused(profile),
+    });
+  } catch (err) {
+    console.error("Error loading conversation:", err);
+    res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+// The CRM's chat-viewer "Send" button hits this to let staff reply as themselves, inside the
+// live 24-hour window (plain text via sendWhatsAppText, not a template) - and to pause the bot
+// for that family afterwards so it doesn't talk over the human who just stepped in. Separate from
+// /send-template, which is for template sends outside the 24-hour window instead.
+const DEFAULT_PAUSE_MINUTES = 120;
+
+app.post("/send-message", express.json(), async (req, res) => {
+  if (!checkCrmSecret(req, res)) return;
+
+  const { phone, message, pauseMinutes } = req.body as {
+    phone?: string;
+    message?: string;
+    pauseMinutes?: number;
+  };
+
+  if (!phone || !message) {
+    res.status(400).json({ error: "phone and message are required" });
+    return;
+  }
+
+  try {
+    await sendWhatsAppText(phone, message);
+    await saveMessage(phone, "staff", message);
+    await pauseBot(phone, pauseMinutes ?? DEFAULT_PAUSE_MINUTES);
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("Error sending manual CRM message:", err);
     res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
   }
 });
