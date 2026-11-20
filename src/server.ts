@@ -5,6 +5,8 @@ import {
   extractInboundMessages,
   extractInboundAttachments,
   sendWhatsAppText,
+  sendWhatsAppDocument,
+  isBrochureRequest,
   sendWhatsAppTemplate,
   type InboundMessage,
 } from "./whatsapp.js";
@@ -206,12 +208,24 @@ async function processMessage(message: InboundMessage): Promise<void> {
 
   await sendWhatsAppText(message.from, reply);
 
+
   if (askingForIntake && classification !== "HUMAN_REQUEST") {
     await incrementIntakeAttempts(message.from);
   }
 
   await saveMessage(message.from, "user", message.text);
   await saveMessage(message.from, "model", reply);
+
+  // Brochure on request: the text reply above still answers whatever else they asked; the PDF
+  // follows it. A failed send is logged, never allowed to break the rest of this turn.
+  if (config.brochureUrl && isBrochureRequest(message.text)) {
+    try {
+      await sendWhatsAppDocument(message.from, config.brochureUrl, "GLO Preschool brochure.pdf", "GLO Preschool & Daycare, Tezpur");
+      await saveMessage(message.from, "model", "[Brochure PDF sent]");
+    } catch (err) {
+      console.error("Brochure send failed:", err);
+    }
+  }
 
   // Pick up the child's name/age the moment either is shared - whether that's a direct answer to
   // being asked, or volunteered unprompted. Only bothers with the extra Gemini call while

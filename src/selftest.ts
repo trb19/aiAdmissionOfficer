@@ -1,7 +1,7 @@
 // Quick logic sanity check that needs no real credentials - not a real test suite (no framework),
 // just a fast way to catch an obviously broken classifier or payload parser before real testing.
 import { classifyMessage, feeRedirectReply, needsIntake, intakeAskSuffix, MAX_INTAKE_ATTEMPTS } from "./ai.js";
-import { extractInboundMessages, extractInboundAttachments, detectLeadSource } from "./whatsapp.js";
+import { extractInboundMessages, extractInboundAttachments, detectLeadSource, isBrochureRequest } from "./whatsapp.js";
 import { matchFaq } from "./faq.js";
 import type { FamilyProfile, FaqEntry } from "./db.js";
 
@@ -122,3 +122,8 @@ assertEqual(detectLeadSource({ type: "text", text: { body: "Hello, fees? (websit
 assertEqual(detectLeadSource({ type: "text", text: { body: "Hi" }, referral: { source_type: "ad", source_url: "https://fb.me/abc" } }), "Facebook Ad", "click-to-WhatsApp ad referral -> Facebook Ad");
 assertEqual(detectLeadSource({ type: "text", text: { body: "Hi" }, referral: { source_type: "ad", source_url: "https://www.instagram.com/p/xyz" } }), "Instagram Ad", "Instagram ad referral -> Instagram Ad");
 assertEqual(detectLeadSource({ type: "text", text: { body: "Hi, admission for my son" } }), undefined, "plain chat -> no source (stays Whatsapp)");
+
+// Brochure on request.
+assertEqual(isBrochureRequest("Can you send me the brochure?"), true, "brochure request");
+assertEqual(isBrochureRequest("Do you have a prospectus or PDF"), true, "prospectus / pdf request");
+assertEqual(isBrochureRequest("What are the timings?"), false, "ordinary question is not a brochure request");

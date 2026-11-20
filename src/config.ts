@@ -47,6 +47,10 @@ export const config = {
 
   escalationPhone: process.env.ESCALATION_PHONE ?? "9101209309",
 
+  // Public link to GLO's brochure PDF (e.g. on gloschools.com/wp-content/uploads/...). When set,
+  // a parent asking for the brochure/prospectus gets the PDF itself on WhatsApp. Unset = off.
+  brochureUrl: process.env.BROCHURE_URL || undefined,
+
   // Shared secret the CRM's "Send WhatsApp" button must present (as an `x-api-key` header) to hit
   // POST /send-template below - that endpoint can push a message to a parent OUTSIDE the normal
   // 24-hour reply window (see sendWhatsAppTemplate in whatsapp.ts for why that needs an

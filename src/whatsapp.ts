@@ -138,6 +138,27 @@ export function extractInboundAttachments(body: unknown): InboundAttachment[] {
   return out;
 }
 
+/** Parent is asking for the brochure / prospectus / a PDF with the details. */
+export function isBrochureRequest(text: string): boolean {
+  return /\b(brochure|prospectus|pamphlet|leaflet|catalogue|catalog)\b|\bpdf\b/i.test(text);
+}
+
+/** Sends a PDF by public link (Meta fetches it). Same 24-hour-window rule as text messages. */
+export async function sendWhatsAppDocument(to: string, link: string, filename: string, caption?: string): Promise<void> {
+  const url = `${GRAPH_BASE}/${config.whatsapp.graphVersion}/${config.whatsapp.phoneNumberId}/messages`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.whatsapp.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "document",
+      document: { link, filename, ...(caption ? { caption } : {}) },
+    }),
+  });
+  if (!res.ok) throw new Error(`WhatsApp document send failed: ${res.status} ${await res.text()}`);
+}
+
 export async function sendWhatsAppText(to: string, body: string): Promise<void> {
   const url = `${GRAPH_BASE}/${config.whatsapp.graphVersion}/${config.whatsapp.phoneNumberId}/messages`;
 
