@@ -1212,3 +1212,77 @@ function createCallbackAlertTrigger() {
   ScriptApp.newTrigger(CALLBACK_TRIGGER_FN).timeBased().everyMinutes(15).create();
   Logger.log("Call-back alerts on: checked every 15 minutes, emailed to " + digestRecipients_() + ".");
 }
+
+// ── WEBSITE FORM → CRM ───────────────────────────────────────
+// Elementor's form "Webhook" action posts here:  <web app URL>?key=<FORM_WEBHOOK_KEY>
+// FORM_WEBHOOK_KEY lives only in Script Properties. A known phone number gets a dated remark on
+// its existing lead instead of a duplicate. Field names are matched loosely (Elementor sends the
+// field labels, and they differ between the home page and contact page forms).
+function doPost(e) {
+  const out = function (obj) {
+    return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+  };
+  try {
+    const expected = PropertiesService.getScriptProperties().getProperty("FORM_WEBHOOK_KEY");
+    const p = (e && e.parameter) || {};
+    if (!expected || p.key !== expected) return out({ ok: false, error: "unauthorised" });
+    const lead = parseWebsiteForm_(p);
+    return out(saveWebsiteEnquiry_(lead));
+  } catch (err) {
+    return out({ ok: false, error: err.message });
+  }
+}
+
+function parseWebsiteForm_(p) {
+  const pick = function (re) {
+    for (const k in p) {
+      if (k === "key" || k === "form_id" || k === "form_name") continue;
+      if (re.test(k) && String(p[k]).trim()) return String(p[k]).trim();
+    }
+    return "";
+  };
+  let phone = pick(/phone|mobile|whats|contact.?no|number/i);
+  if (!normalizePhone_(phone)) {
+    // Some forms label the phone field oddly; fall back to any value that looks like a number.
+    for (const k in p) if (k !== "key" && normalizePhone_(p[k])) { phone = p[k]; break; }
+  }
+  return {
+    parentName: pick(/^(your )?name|parent|full.?name/i) || pick(/name/i),
+    childName: pick(/child|kid|ward/i),
+    phone: phone,
+    email: pick(/e-?mail/i),
+    message: pick(/message|query|comment|enquiry|inquiry|question/i),
+    page: String(p.form_name || p.referer_title || p.page_url || ""),
+  };
+}
+
+function saveWebsiteEnquiry_(f) {
+  const phone = normalizePhone_(f.phone);
+  const note = "[" + fmtLog(new Date()) + "] Website form" + (f.page ? " (" + f.page + ")" : "") + ": " +
+    [f.message, f.email ? "Email: " + f.email : ""].filter(String).join(" · ");
+  if (!phone && !f.email) return { ok: false, error: "No phone or email in the form" };
+
+  if (phone) {
+    const existing = leadsByPhone_()[phone];
+    if (existing) {
+      const sheet = getSheet();
+      const rows = sheet.getDataRange().getValues();
+      for (let i = 1; i < rows.length; i++) {
+        if (String(rows[i][COL.ID - 1]) === String(existing.id)) {
+          const old = String(rows[i][COL.REMARKS - 1] || "").trim();
+          sheet.getRange(i + 1, COL.REMARKS).setValue(old ? old + "\n" + note : note);
+          sheet.getRange(i + 1, COL.LAST_CONTACT).setValue(new Date()).setNumberFormat("dd-MMM-yyyy");
+          return { ok: true, id: existing.id, existing: true };
+        }
+      }
+    }
+  }
+  return addLead({
+    parentName: f.parentName || "Website enquiry",
+    childName: f.childName,
+    phone: phone || "",
+    status: "Open",
+    source: "Website",
+    remarks: note,
+  });
+}
