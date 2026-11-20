@@ -1,7 +1,9 @@
 import express from "express";
+import path from "node:path";
 import { config } from "./config.js";
 import {
   extractInboundMessages,
+  extractInboundAttachments,
   sendWhatsAppText,
   sendWhatsAppTemplate,
   type InboundMessage,
@@ -28,6 +30,8 @@ import {
   getActiveFaqEntries,
   isBotPaused,
   pauseBot,
+  listConversations,
+  markConversationRead,
 } from "./db.js";
 
 const app = express();
@@ -100,6 +104,21 @@ app.post("/webhook", (req, res) => {
 
 async function handleWebhookEvent(body: unknown): Promise<void> {
   const messages = extractInboundMessages(body);
+
+  // Photos, voice notes, documents, button taps etc. - the bot doesn't answer these, but they're
+  // saved into the conversation so staff can see them in /inbox (previously they vanished).
+  for (const attachment of extractInboundAttachments(body)) {
+    if (seenMessageIds.has(attachment.messageId)) continue;
+    seenMessageIds.add(attachment.messageId);
+    void runSerializedByPhone(attachment.from, async () => {
+      if (attachment.parentName) {
+        await upsertFamilyProfile(attachment.from, { parentName: attachment.parentName });
+      }
+      await saveMessage(attachment.from, "user", attachment.label);
+    }).catch((err) => {
+      console.error("Error saving attachment message:", err);
+    });
+  }
 
   for (const message of messages) {
     if (seenMessageIds.has(message.messageId)) {
@@ -247,18 +266,9 @@ async function processMessage(message: InboundMessage): Promise<void> {
 // sendWhatsAppText can't do. Kept separate from the webhook's reply path on purpose: this is
 // staff-initiated, not triggered by an inbound message.
 app.post("/send-template", express.json(), async (req, res) => {
-  // Soft-gated behind CRM_SEND_SECRET (see config.ts) - not left open the way /webhook is, since
-  // this one can push a message to a parent at any time, not just reply to one they sent.
-  if (config.crm.sendSecret) {
-    if (req.header("x-api-key") !== config.crm.sendSecret) {
-      res.status(401).json({ error: "Missing or invalid x-api-key" });
-      return;
-    }
-  } else {
-    console.warn(
-      "POST /send-template called with no CRM_SEND_SECRET configured - anyone with this URL can send templates. Set CRM_SEND_SECRET on Render once done testing."
-    );
-  }
+  // Gated behind CRM_SEND_SECRET (see checkCrmSecret below) - this can push a message to a parent
+  // at any time, not just reply to one they sent.
+  if (!checkCrmSecret(req, res)) return;
 
   // bodyVariables is EITHER a plain array (positional {{1}}, {{2}} templates, e.g. ["Tirth"]) OR a
   // plain object keyed by name (named {{customer_name}} templates, e.g. {"customer_name":"Tirth"})
@@ -291,16 +301,18 @@ app.post("/send-template", express.json(), async (req, res) => {
   }
 });
 
+// Every CRM endpoint can read a parent's chats or message them, so all of them REFUSE to work until
+// CRM_SEND_SECRET is set (they used to fall open with a console warning, which let anyone who knew
+// the Render URL and a parent's number read that family's chat). The CRM sends the same value as
+// the x-api-key header, read from its Script Properties.
 function checkCrmSecret(req: express.Request, res: express.Response): boolean {
-  if (config.crm.sendSecret) {
-    if (req.header("x-api-key") !== config.crm.sendSecret) {
-      res.status(401).json({ error: "Missing or invalid x-api-key" });
-      return false;
-    }
-  } else {
-    console.warn(
-      "CRM endpoint called with no CRM_SEND_SECRET configured - anyone with this URL can use it. Set CRM_SEND_SECRET on Render once done testing."
-    );
+  if (!config.crm.sendSecret) {
+    res.status(503).json({ error: "CRM endpoints are locked: set CRM_SEND_SECRET on the server first." });
+    return false;
+  }
+  if (req.header("x-api-key") !== config.crm.sendSecret) {
+    res.status(401).json({ error: "Missing or invalid x-api-key" });
+    return false;
   }
   return true;
 }
@@ -359,6 +371,58 @@ app.post("/send-message", express.json(), async (req, res) => {
     console.error("Error sending manual CRM message:", err);
     res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Staff inbox (/inbox): a small web page to read every WhatsApp conversation and reply as a human.
+// Same lock as the CRM endpoints above: they refuse to work until CRM_SEND_SECRET is configured.
+const requireInboxKey = checkCrmSecret;
+
+app.get("/api/inbox/conversations", async (req, res) => {
+  if (!requireInboxKey(req, res)) return;
+  try {
+    const limit = Math.min(Number(req.query.limit ?? 200) || 200, 500);
+    res.status(200).json({ ok: true, conversations: await listConversations(limit) });
+  } catch (err) {
+    console.error("Error listing conversations:", err);
+    res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+app.post("/api/inbox/conversations/:phone/read", async (req, res) => {
+  if (!requireInboxKey(req, res)) return;
+  try {
+    await markConversationRead(req.params.phone);
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("Error marking conversation read:", err);
+    res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+// Pause (minutes > 0) or resume (minutes = 0) the bot's auto-replies for one family.
+app.post("/api/inbox/conversations/:phone/pause", async (req, res) => {
+  if (!requireInboxKey(req, res)) return;
+  const minutes = Number((req.body as { minutes?: number })?.minutes ?? DEFAULT_PAUSE_MINUTES);
+  if (!Number.isFinite(minutes) || minutes < 0 || minutes > 60 * 24 * 30) {
+    res.status(400).json({ error: "minutes must be between 0 and 43200" });
+    return;
+  }
+  try {
+    await pauseBot(req.params.phone, minutes);
+    res.status(200).json({ ok: true, paused: minutes > 0 });
+  } catch (err) {
+    console.error("Error pausing bot:", err);
+    res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+// The inbox page itself - static HTML/JS in /public. It asks for the inbox key once and sends it
+// as x-api-key on every call, so the page is harmless without the key.
+const publicDir = path.join(process.cwd(), "public");
+app.get("/inbox", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.sendFile(path.join(publicDir, "inbox.html"));
 });
 
 app.listen(config.port, () => {

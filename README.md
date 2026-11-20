@@ -124,3 +124,45 @@ row appears in the "Admission Queries" tab of the CRM sheet, and a row for that 
 appears (or updates) in the "Conversations" tab. Then send a follow-up message that only makes
 sense with context (e.g. ask about age eligibility, then ask "what about for Daycare instead?")
 and confirm the reply actually understands what "instead" refers to.
+
+## Staff inbox (`/inbox`)
+
+A web page where staff read every WhatsApp conversation and reply as a human, on desktop or phone.
+Open `https://<your-render-host>/inbox`.
+
+- **Chat list:** every family, newest first, with the parent's WhatsApp name, the child's name and
+  age once the bot has learned them, an unread count, and a "Bot paused" tag. It refreshes every 10
+  seconds. Search covers names and numbers.
+- **Conversation:** the full transcript, showing who said what (parent, bot, or staff). It refreshes
+  every 5 seconds. Photos, voice notes, documents, locations and button taps appear as
+  "[Voice note]", "[Photo] caption" and so on. The bot still doesn't answer those, but staff can now
+  see them; before this change they were silently dropped.
+- **Reply:** a free-text reply (`POST /send-message`) is allowed while WhatsApp's 24-hour window is
+  open, meaning the parent wrote within the last 24 hours. Sending one pauses the bot for that
+  family for 2 hours, so it doesn't talk over staff. **Pause bot / Resume bot** controls the same
+  thing by hand.
+- **Templates:** once the window has closed, the page switches to the template form
+  (`POST /send-template`). **New** starts a conversation with a number that has never messaged, which
+  WhatsApp also only allows through a template.
+
+**Access:** the page asks for an inbox key, which is the value of `CRM_SEND_SECRET`. The
+`/api/inbox/*` endpoints refuse to work at all until `CRM_SEND_SECRET` is set, because they expose
+every parent's chats. Use a long random value (`openssl rand -hex 24`). Each staff device remembers
+the key until someone presses **Lock**.
+
+### Render environment checklist for the inbox
+
+| Variable | Value |
+|---|---|
+| `CRM_SEND_SECRET` | A long random string. This doubles as the inbox key |
+| `WHATSAPP_PHONE_NUMBER_ID` | `1252425371291061`. This is the **Phone number ID** of +91 91012 09309 from WhatsApp Manager. Don't use the WhatsApp account ID `1687556379005979` that `.env.example` used to show: receiving still works with the wrong one, but every send fails |
+| `ESCALATION_PHONE` | `9101209309`, the school's official number for calls and WhatsApp |
+
+### Testing locally without real credentials
+
+The inbox can be exercised against a throwaway in-memory Postgres (PGlite with `pglite-socket`,
+`maxConnections` set to more than 1) by pointing `DATABASE_URL` at
+`postgres://postgres@127.0.0.1:<port>/postgres`. SSL is skipped automatically for localhost.
+Sends will fail with a 401 from Meta when the WhatsApp token is a dummy, and the page shows that
+error without losing the typed text.
+
