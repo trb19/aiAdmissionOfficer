@@ -1,7 +1,7 @@
 // Quick logic sanity check that needs no real credentials - not a real test suite (no framework),
 // just a fast way to catch an obviously broken classifier or payload parser before real testing.
 import { classifyMessage, feeRedirectReply, needsIntake, intakeAskSuffix, MAX_INTAKE_ATTEMPTS } from "./ai.js";
-import { extractInboundMessages } from "./whatsapp.js";
+import { extractInboundMessages, extractInboundAttachments } from "./whatsapp.js";
 import { matchFaq } from "./faq.js";
 import type { FamilyProfile, FaqEntry } from "./db.js";
 
@@ -64,9 +64,9 @@ assertEqual(
 );
 assertEqual(extracted[0]?.parentName, undefined, "parentName is undefined when no contacts array is present");
 
-const emptyProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: 0 };
-const knownProfile: FamilyProfile = { parentName: "Priya", childName: "Aarav", childAge: "3", intakeAttempts: 1 };
-const exhaustedProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: MAX_INTAKE_ATTEMPTS };
+const emptyProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: 0, pausedUntil: null };
+const knownProfile: FamilyProfile = { parentName: "Priya", childName: "Aarav", childAge: "3", intakeAttempts: 1, pausedUntil: null };
+const exhaustedProfile: FamilyProfile = { parentName: null, childName: null, childAge: null, intakeAttempts: MAX_INTAKE_ATTEMPTS, pausedUntil: null };
 
 assertEqual(needsIntake(emptyProfile), true, "needsIntake is true when child name/age unknown and attempts remain");
 assertEqual(needsIntake(knownProfile), false, "needsIntake is false once child name and age are both known");
@@ -93,5 +93,25 @@ assertEqual(matchFaq("Do you have a swimming pool?", faqEntries), null, "returns
 assertEqual(intakeAskSuffix(emptyProfile) !== null, true, "intakeAskSuffix returns something when intake is still needed");
 assertEqual(intakeAskSuffix(knownProfile), null, "intakeAskSuffix returns null once child info is known");
 assertEqual(intakeAskSuffix(exhaustedProfile), null, "intakeAskSuffix returns null once attempts are exhausted");
+
+// Non-text messages (photos, voice notes, button taps) are saved for the /inbox page but never
+// answered by the bot - extractInboundMessages must keep ignoring them, extractInboundAttachments
+// must pick them up with a readable label.
+const mixedPayload = {
+  entry: [{ changes: [{ value: {
+    contacts: [{ wa_id: "919876543210", profile: { name: "Priya" } }],
+    messages: [
+      { id: "wamid.t1", from: "919876543210", timestamp: "1700000000", type: "text", text: { body: "Hello" } },
+      { id: "wamid.a1", from: "919876543210", timestamp: "1700000001", type: "audio", audio: { id: "m1" } },
+      { id: "wamid.i1", from: "919876543210", timestamp: "1700000002", type: "image", image: { id: "m2", caption: "School gate?" } },
+      { id: "wamid.b1", from: "919876543210", timestamp: "1700000003", type: "button", button: { text: "Book a visit" } },
+    ],
+  } }] }],
+};
+assertEqual(extractInboundMessages(mixedPayload).length, 1, "text extractor still ignores photos/voice notes/buttons");
+const attachments = extractInboundAttachments(mixedPayload);
+assertEqual(attachments.map((a) => a.label), ["[Voice note]", "[Photo] School gate?", "[Button] Book a visit"], "attachments get readable inbox labels");
+assertEqual(attachments[0]?.parentName, "Priya", "attachment keeps the sender's WhatsApp name");
+assertEqual(extractInboundAttachments(statusOnlyPayload).length, 0, "status callbacks are not treated as attachments");
 
 console.log("Self-test complete.");
