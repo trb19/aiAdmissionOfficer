@@ -32,6 +32,7 @@ import {
   pauseBot,
   listConversations,
   markConversationRead,
+  flagNeedsCall,
 } from "./db.js";
 
 const app = express();
@@ -185,8 +186,10 @@ async function processMessage(message: InboundMessage): Promise<void> {
   let reply: string;
   if (classification === "FEE_QUESTION") {
     reply = feeRedirectReply(profile);
+    await flagNeedsCall(message.from, "Fees");
   } else if (classification === "HUMAN_REQUEST") {
     reply = humanHandoffReply(config.escalationPhone);
+    await flagNeedsCall(message.from, "Wants to talk to a person");
   } else {
     // Check the pre-approved FAQ cache before spending a Gemini call - see src/faq.ts and the
     // faq_entries seed in src/db.ts. A hit answers instantly from the database; a miss falls

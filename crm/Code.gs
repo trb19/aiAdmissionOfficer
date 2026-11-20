@@ -1107,6 +1107,8 @@ function getCrmInbox() {
         lastInboundAt: c.lastInboundAt,
         unreadCount: c.unreadCount || 0,
         pausedUntil: c.pausedUntil,
+        needsCallAt: c.needsCallAt || null,
+        needsCallReason: c.needsCallReason || null,
         lead: lead
           ? { id: lead.id, parentName: lead.parentName, childName: lead.childName, status: lead.status, classInt: lead.classInt, phone: lead.phone }
           : null,
@@ -1173,4 +1175,40 @@ function addLeadFromChat(data) {
   } catch (e) {
     return { ok: false, error: e.message };
   }
+}
+
+// ── CALL-BACK ALERTS ─────────────────────────────────────────
+// The bot flags a parent when they ask about fees or ask for a person (fees are only discussed on
+// a call). This emails the DIGEST_EMAIL people about NEW flags, so nobody waits until tomorrow.
+// Turn it on once: run createCallbackAlertTrigger from the Script Editor (safe to re-run).
+const CALLBACK_TRIGGER_FN = "checkCallbackAlerts";
+
+function checkCallbackAlerts() {
+  const props = PropertiesService.getScriptProperties();
+  const since = props.getProperty("CALLBACK_ALERTED_UNTIL") || "";
+  const inbox = getCrmInbox();
+  if (!inbox.ok) return;
+  const fresh = inbox.chats.filter(function (c) { return c.needsCallAt && c.needsCallAt > since; });
+  if (!fresh.length) return;
+  const newest = fresh.reduce(function (m, c) { return c.needsCallAt > m ? c.needsCallAt : m; }, since);
+  const lines = fresh.map(function (c) {
+    return "<li><b>" + digestEsc_(c.parentName || c.phone) + "</b> (" + digestEsc_(c.phone) + ")" +
+      (c.lead ? " · lead #" + c.lead.id : " · not in CRM yet") + " · " + digestEsc_(c.needsCallReason || "") +
+      "<br><span style=\"color:#475569\">" + digestEsc_(String(c.lastMessage || "").slice(0, 160)) + "</span></li>";
+  }).join("");
+  MailApp.sendEmail({
+    to: digestRecipients_(),
+    subject: "📞 GLO: " + fresh.length + " parent" + (fresh.length > 1 ? "s" : "") + " waiting for a call back",
+    htmlBody: "<div style=\"font-family:sans-serif\"><p>These parents asked on WhatsApp and the bot told them our team will call:</p><ul>" + lines +
+      "</ul><p>Open the CRM → 💬 WhatsApp → 📞 Call back. The flag clears when you reply from the CRM.</p></div>",
+  });
+  props.setProperty("CALLBACK_ALERTED_UNTIL", newest);
+}
+
+function createCallbackAlertTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === CALLBACK_TRIGGER_FN) ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger(CALLBACK_TRIGGER_FN).timeBased().everyMinutes(15).create();
+  Logger.log("Call-back alerts on: checked every 15 minutes, emailed to " + digestRecipients_() + ".");
 }

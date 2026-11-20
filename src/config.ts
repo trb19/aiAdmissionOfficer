@@ -45,7 +45,7 @@ export const config = {
     url: required("DATABASE_URL"),
   },
 
-  escalationPhone: process.env.ESCALATION_PHONE ?? "6001819309",
+  escalationPhone: process.env.ESCALATION_PHONE ?? "9101209309",
 
   // Shared secret the CRM's "Send WhatsApp" button must present (as an `x-api-key` header) to hit
   // POST /send-template below - that endpoint can push a message to a parent OUTSIDE the normal

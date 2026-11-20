@@ -340,6 +340,7 @@
   .wa-row-tags{grid-column:1 / -1;display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
   .wa-pill{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--surface2);color:var(--text2);font-weight:600}
   .wa-pill.nolead{background:var(--yellow-light);color:var(--yellow)}
+  .wa-pill.callback{background:var(--red-light,#fde8e8);color:var(--red,#c0392b)}
   .wa-pill.paused{background:var(--purple-light);color:var(--purple)}
   .wa-unread{display:inline-block;min-width:20px;padding:1px 7px;border-radius:999px;background:var(--wa-accent);color:#fff;font-size:11px;font-weight:700;text-align:center}
   .tile-wa-unread{font-size:11px;font-weight:700;color:#fff;background:var(--wa-accent);border-radius:999px;padding:2px 8px;margin-right:4px;cursor:pointer;border:0}
@@ -598,6 +599,7 @@
         <div class="status-strip" id="waInboxStrip">
           <button class="sstrip-btn active" onclick="setWaInboxFilter(this,'all')">All</button>
           <button class="sstrip-btn" onclick="setWaInboxFilter(this,'unread')">🟢 Unread</button>
+          <button class="sstrip-btn" onclick="setWaInboxFilter(this,'callback')">📞 Call back</button>
           <button class="sstrip-btn" onclick="setWaInboxFilter(this,'nolead')">➕ Not in CRM</button>
           <button class="sstrip-btn" onclick="setWaInboxFilter(this,'open')">⏳ Reply window open</button>
         </div>
@@ -1918,6 +1920,7 @@ function renderWaInbox() {
     if (waInboxFilter === 'unread' && !c.unreadCount) return false;
     if (waInboxFilter === 'nolead' && c.lead) return false;
     if (waInboxFilter === 'open' && !waWindowOpen(c.lastInboundAt)) return false;
+    if (waInboxFilter === 'callback' && !c.needsCallAt) return false;
     if (!q) return true;
     return [c.parentName, c.childName, c.phone, c.lead && c.lead.parentName, c.lead && c.lead.childName]
       .some(function(v) { return String(v || '').toLowerCase().indexOf(q) > -1; });
@@ -1939,6 +1942,7 @@ function renderWaInbox() {
       tags.push('<span class="wa-pill nolead">Not in CRM</span>');
     }
     if (c.childName) tags.push('<span class="wa-pill">👶 ' + esc(c.childName) + '</span>');
+    if (c.needsCallAt) tags.push('<span class="wa-pill callback">📞 Call back: ' + esc(c.needsCallReason || 'asked') + '</span>');
     if (paused) tags.push('<span class="wa-pill paused">⏸️ Bot paused</span>');
     tags.push('<span class="wa-pill">📱 ' + esc(normalizePhone(c.phone)) + '</span>');
     return '<div class="wa-row' + (c.unreadCount ? ' unread' : '') + '" onclick="openChatFromInbox(' + i + ')">'

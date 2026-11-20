@@ -87,6 +87,11 @@ function ensureSchema(): Promise<void> {
         phone TEXT PRIMARY KEY,
         last_read_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+
+      -- needs_call_*: set when a parent asks about fees or asks for a person, so the CRM can flag
+      -- "call this parent back" and email staff. Cleared when staff reply from the CRM or /inbox.
+      ALTER TABLE family_profiles ADD COLUMN IF NOT EXISTS needs_call_at TIMESTAMPTZ;
+      ALTER TABLE family_profiles ADD COLUMN IF NOT EXISTS needs_call_reason TEXT;
     `).then(() => seedFaqEntries());
   }
   return schemaReadyPromise;
@@ -308,6 +313,26 @@ export async function saveMessage(
     role,
     content,
   ]);
+  // A staff reply means a human has picked the parent up, so the call-back flag is done with.
+  if (role === "staff") {
+    await getPool().query(
+      `UPDATE family_profiles SET needs_call_at = NULL, needs_call_reason = NULL WHERE phone = $1`,
+      [phone]
+    );
+  }
+}
+
+/** Flags a parent for a staff call-back (fees question or asked for a person). Keeps the FIRST
+ * time it was raised, so repeat messages don't re-trigger the CRM's email alert. */
+export async function flagNeedsCall(phone: string, reason: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO family_profiles (phone, needs_call_at, needs_call_reason) VALUES ($1, now(), $2)
+     ON CONFLICT (phone) DO UPDATE
+       SET needs_call_at = COALESCE(family_profiles.needs_call_at, now()),
+           needs_call_reason = COALESCE(family_profiles.needs_call_reason, $2)`,
+    [phone, reason]
+  );
 }
 
 export async function getStoredSummary(phone: string): Promise<string | null> {
@@ -445,6 +470,9 @@ export interface ConversationListItem {
   lastInboundAt: string | null;
   unreadCount: number;
   pausedUntil: string | null;
+  /** When the parent was flagged for a call-back (see flagNeedsCall), and why. */
+  needsCallAt: string | null;
+  needsCallReason: string | null;
 }
 
 export async function listConversations(limit = 200): Promise<ConversationListItem[]> {
@@ -460,9 +488,11 @@ export async function listConversations(limit = 200): Promise<ConversationListIt
     last_inbound_at: Date | null;
     unread: string;
     paused_until: Date | null;
+    needs_call_at: Date | null;
+    needs_call_reason: string | null;
   }>(
     `SELECT p.phone,
-            fp.parent_name, fp.child_name, fp.child_age, fp.paused_until,
+            fp.parent_name, fp.child_name, fp.child_age, fp.paused_until, fp.needs_call_at, fp.needs_call_reason,
             last.content AS last_content, last.role AS last_role, last.created_at AS last_at,
             (SELECT max(created_at) FROM messages WHERE phone = p.phone AND role = 'user') AS last_inbound_at,
             (SELECT count(*) FROM messages u
@@ -490,6 +520,8 @@ export async function listConversations(limit = 200): Promise<ConversationListIt
     lastInboundAt: r.last_inbound_at ? r.last_inbound_at.toISOString() : null,
     unreadCount: Number(r.unread),
     pausedUntil: r.paused_until ? r.paused_until.toISOString() : null,
+    needsCallAt: r.needs_call_at ? r.needs_call_at.toISOString() : null,
+    needsCallReason: r.needs_call_reason,
   }));
 }
 
