@@ -219,6 +219,9 @@ export interface CrmLeadUpdate {
    * summary; a message on a new day adds a new line below it, leaving the previous day's line as
    * it was. That's what actually helps staff screen a caller quickly. */
   remarks?: string;
+  /** Source column for a NEW lead ("Website", "Facebook Ad"...). Defaults to "Whatsapp". Never
+   * overwrites the Source of an existing lead: staff may have set it from a call or visit. */
+  source?: string;
 }
 
 /** Folds a new summary into Remarks as one line per calendar day - see the CrmLeadUpdate.remarks
@@ -290,7 +293,7 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
         "Open",
         today,
         "",
-        "Whatsapp",
+        update.source ?? "Whatsapp",
         appendRemark("", today, update.remarks),
         "",
       ];

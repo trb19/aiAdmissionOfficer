@@ -256,6 +256,7 @@ async function processMessage(message: InboundMessage): Promise<void> {
     childName: latestChildName,
     childAge: latestChildAge,
     remarks: summary,
+    source: message.source,
   });
 
   await upsertConversationSummary(message.from, summary, classification);

@@ -1,7 +1,7 @@
 // Quick logic sanity check that needs no real credentials - not a real test suite (no framework),
 // just a fast way to catch an obviously broken classifier or payload parser before real testing.
 import { classifyMessage, feeRedirectReply, needsIntake, intakeAskSuffix, MAX_INTAKE_ATTEMPTS } from "./ai.js";
-import { extractInboundMessages, extractInboundAttachments } from "./whatsapp.js";
+import { extractInboundMessages, extractInboundAttachments, detectLeadSource } from "./whatsapp.js";
 import { matchFaq } from "./faq.js";
 import type { FamilyProfile, FaqEntry } from "./db.js";
 
@@ -115,3 +115,10 @@ assertEqual(attachments[0]?.parentName, "Priya", "attachment keeps the sender's 
 assertEqual(extractInboundAttachments(statusOnlyPayload).length, 0, "status callbacks are not treated as attachments");
 
 console.log("Self-test complete.");
+
+// Lead source for the CRM's Source column (new leads only).
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi Glo! I would like to book a school visit." } }), "Website", "website button pre-fill -> Website");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hello, fees? (website)" } }), "Website", "(website) marker -> Website");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi" }, referral: { source_type: "ad", source_url: "https://fb.me/abc" } }), "Facebook Ad", "click-to-WhatsApp ad referral -> Facebook Ad");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi" }, referral: { source_type: "ad", source_url: "https://www.instagram.com/p/xyz" } }), "Instagram Ad", "Instagram ad referral -> Instagram Ad");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi, admission for my son" } }), undefined, "plain chat -> no source (stays Whatsapp)");
