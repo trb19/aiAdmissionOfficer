@@ -52,6 +52,70 @@ export function extractInboundMessages(body: unknown): InboundMessage[] {
   return messages;
 }
 
+/** A non-text message (photo, voice note, document, location, button tap...) - the bot doesn't
+ * answer these, but they're saved into the conversation so staff see them in /inbox instead of
+ * the message silently vanishing. `label` is a short human-readable stand-in for the transcript,
+ * e.g. "[Voice note]" or "[Photo] caption text". */
+export interface InboundAttachment {
+  messageId: string;
+  from: string;
+  timestamp: string;
+  parentName?: string;
+  type: string;
+  label: string;
+}
+
+const ATTACHMENT_LABELS: Record<string, string> = {
+  image: "Photo",
+  audio: "Voice note",
+  voice: "Voice note",
+  video: "Video",
+  document: "Document",
+  sticker: "Sticker",
+  location: "Location",
+  contacts: "Contact card",
+  reaction: "Reaction",
+};
+
+export function extractInboundAttachments(body: unknown): InboundAttachment[] {
+  const out: InboundAttachment[] = [];
+  for (const entry of (body as any)?.entry ?? []) {
+    for (const change of entry?.changes ?? []) {
+      const value = change?.value;
+      const contacts = value?.contacts ?? [];
+      for (const msg of value?.messages ?? []) {
+        if (!msg?.type || msg.type === "text") continue;
+        const contact = contacts.find((c: any) => c?.wa_id === msg.from);
+        let label: string;
+        if (msg.type === "button") {
+          label = `[Button] ${msg.button?.text ?? ""}`.trim();
+        } else if (msg.type === "interactive") {
+          const reply = msg.interactive?.button_reply ?? msg.interactive?.list_reply;
+          label = `[Button] ${reply?.title ?? ""}`.trim();
+        } else if (msg.type === "location") {
+          const loc = msg.location ?? {};
+          label = `[Location] ${loc.name ?? ""} ${loc.latitude ?? ""},${loc.longitude ?? ""}`.replace(/\s+/g, " ").trim();
+        } else if (msg.type === "reaction") {
+          label = `[Reaction] ${msg.reaction?.emoji ?? ""}`.trim();
+        } else {
+          const media = msg[msg.type] ?? {};
+          const caption = media.caption ?? media.filename ?? "";
+          label = `[${ATTACHMENT_LABELS[msg.type] ?? msg.type}]${caption ? " " + caption : ""}`;
+        }
+        out.push({
+          messageId: msg.id,
+          from: msg.from,
+          timestamp: msg.timestamp,
+          parentName: contact?.profile?.name || undefined,
+          type: msg.type,
+          label,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 export async function sendWhatsAppText(to: string, body: string): Promise<void> {
   const url = `${GRAPH_BASE}/${config.whatsapp.graphVersion}/${config.whatsapp.phoneNumberId}/messages`;
 

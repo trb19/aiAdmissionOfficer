@@ -1,0 +1,4 @@
+# Copies of the live/TEST Apps Script code taken for reference and rollback - keep out of git
+*.live
+backup-*
+screenshots/

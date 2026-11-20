@@ -21,7 +21,9 @@ function getPool(): pg.Pool {
       // Render's managed Postgres requires SSL; rejectUnauthorized:false matches Render's own
       // connection examples since it uses a Render-issued cert chain most Node setups don't trust
       // by default.
-      ssl: { rejectUnauthorized: false },
+      // A local database (localhost dev, tests) usually has no TLS at all, so SSL is only used for
+      // remote hosts like Render.
+      ssl: /@(localhost|127\.0\.0\.1)[:/]/.test(config.database.url) ? false : { rejectUnauthorized: false },
     });
   }
   return pool;
@@ -78,6 +80,13 @@ function ensureSchema(): Promise<void> {
       -- the bot skips auto-replying to that parent for a while and doesn't talk over a human who
       -- just stepped in. NULL (the default) means "not paused".
       ALTER TABLE family_profiles ADD COLUMN IF NOT EXISTS paused_until TIMESTAMPTZ;
+
+      -- inbox_reads: when staff last opened each conversation in the /inbox page, so the chat
+      -- list can show an unread count (parent messages newer than this). One row per phone.
+      CREATE TABLE IF NOT EXISTS inbox_reads (
+        phone TEXT PRIMARY KEY,
+        last_read_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
     `).then(() => seedFaqEntries());
   }
   return schemaReadyPromise;
@@ -418,6 +427,78 @@ export async function incrementIntakeAttempts(phone: string): Promise<void> {
      ON CONFLICT (phone) DO UPDATE SET
        intake_attempts = family_profiles.intake_attempts + 1,
        updated_at = now()`,
+    [phone]
+  );
+}
+
+/** One row per family for the /inbox chat list: who they are, the latest message either way,
+ * how many of their messages staff haven't opened yet, and when they last wrote to us (which
+ * decides whether WhatsApp's 24-hour free-reply window is still open - see the inbox page). */
+export interface ConversationListItem {
+  phone: string;
+  parentName: string | null;
+  childName: string | null;
+  childAge: string | null;
+  lastMessage: string;
+  lastRole: "user" | "model" | "staff";
+  lastMessageAt: string;
+  lastInboundAt: string | null;
+  unreadCount: number;
+  pausedUntil: string | null;
+}
+
+export async function listConversations(limit = 200): Promise<ConversationListItem[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{
+    phone: string;
+    parent_name: string | null;
+    child_name: string | null;
+    child_age: string | null;
+    last_content: string;
+    last_role: "user" | "model" | "staff";
+    last_at: Date;
+    last_inbound_at: Date | null;
+    unread: string;
+    paused_until: Date | null;
+  }>(
+    `SELECT p.phone,
+            fp.parent_name, fp.child_name, fp.child_age, fp.paused_until,
+            last.content AS last_content, last.role AS last_role, last.created_at AS last_at,
+            (SELECT max(created_at) FROM messages WHERE phone = p.phone AND role = 'user') AS last_inbound_at,
+            (SELECT count(*) FROM messages u
+              WHERE u.phone = p.phone AND u.role = 'user'
+                AND u.created_at > COALESCE(r.last_read_at, 'epoch'::timestamptz)) AS unread
+       FROM (SELECT DISTINCT phone FROM messages) p
+       JOIN LATERAL (
+         SELECT content, role, created_at FROM messages
+          WHERE phone = p.phone ORDER BY created_at DESC LIMIT 1
+       ) last ON true
+       LEFT JOIN family_profiles fp ON fp.phone = p.phone
+       LEFT JOIN inbox_reads r ON r.phone = p.phone
+      ORDER BY last.created_at DESC
+      LIMIT $1`,
+    [limit]
+  );
+  return rows.map((r) => ({
+    phone: r.phone,
+    parentName: r.parent_name,
+    childName: r.child_name,
+    childAge: r.child_age,
+    lastMessage: r.last_content,
+    lastRole: r.last_role,
+    lastMessageAt: r.last_at.toISOString(),
+    lastInboundAt: r.last_inbound_at ? r.last_inbound_at.toISOString() : null,
+    unreadCount: Number(r.unread),
+    pausedUntil: r.paused_until ? r.paused_until.toISOString() : null,
+  }));
+}
+
+/** Called when staff open a conversation in /inbox - clears its unread count. */
+export async function markConversationRead(phone: string): Promise<void> {
+  await ensureSchema();
+  await getPool().query(
+    `INSERT INTO inbox_reads (phone, last_read_at) VALUES ($1, now())
+     ON CONFLICT (phone) DO UPDATE SET last_read_at = now()`,
     [phone]
   );
 }
