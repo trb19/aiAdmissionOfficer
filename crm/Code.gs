@@ -444,87 +444,106 @@ function getOverdue() {
   }
 }
 
-// ── DAILY OVERDUE EMAIL DIGEST ─────────────────────────────────
-// Change DIGEST_EMAIL below to whichever inbox should receive it — can
-// be a comma-separated list for multiple people.
+// ── DAILY 8 AM SUMMARY EMAIL ─────────────────────────────────
 // To turn the automatic morning email ON: in the Script Editor, pick
 // "createDailyDigestTrigger" from the function dropdown and click Run,
 // ONE time. That's it — it'll then fire on its own every day around
 // 8 AM without any further action. Re-running it is safe (it replaces
 // the old schedule instead of creating a duplicate).
-const DIGEST_EMAIL = "cool.trb@gmail.com";
+// Who gets the 8 am summary: Script Properties > DIGEST_EMAIL (comma-separate several people).
+// Falls back to the script owner. Kept out of this file because the repo is public.
 const DIGEST_TRIGGER_FN = "sendDailyDigest";
+function digestRecipients_() {
+  return PropertiesService.getScriptProperties().getProperty("DIGEST_EMAIL") || Session.getEffectiveUser().getEmail();
+}
 
+function digestEsc_(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+
+function digestTable_(headers, rows) {
+  const td = 'style="padding:8px 12px;border-bottom:1px solid #e2e8f0;vertical-align:top"';
+  return (
+    '<table style="border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px">' +
+    '<tr style="background:#f0f3fa;text-align:left">' +
+    headers.map(function (h) { return '<th style="padding:8px 12px">' + h + "</th>"; }).join("") +
+    "</tr>" +
+    rows.map(function (r) { return "<tr>" + r.map(function (c) { return "<td " + td + ">" + c + "</td>"; }).join("") + "</tr>"; }).join("") +
+    "</table>"
+  );
+}
+
+// New leads whose Date of Inquiry is yesterday or today (the email goes out at 8 am).
+function getNewLeadsForDigest_() {
+  const data = getSheet().getDataRange().getValues();
+  const since = new Date();
+  since.setHours(0, 0, 0, 0);
+  since.setDate(since.getDate() - 1);
+  const out = [];
+  for (let i = 1; i < data.length; i++) {
+    const d = data[i][COL.DATE_INQUIRY - 1];
+    if (!(d instanceof Date) || d < since || !String(data[i][COL.PARENT_NAME - 1] || data[i][COL.PHONE - 1] || "").trim()) continue;
+    out.push(rowToLead(data[i]));
+  }
+  return out;
+}
+
+// Morning summary: new leads, parents waiting on WhatsApp, overdue follow-ups.
 function sendDailyDigest() {
-  const leads = getOverdueRaw_();
-  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd MMM yyyy");
+  const tz = Session.getScriptTimeZone();
+  const today = Utilities.formatDate(new Date(), tz, "dd MMM yyyy");
+  const newLeads = getNewLeadsForDigest_();
+  const overdue = getOverdueRaw_();
 
-  if (!leads.length) {
-    MailApp.sendEmail({
-      to: DIGEST_EMAIL,
-      subject: "GLO CRM — No overdue follow-ups today (" + today + ")",
-      htmlBody:
-        '<div style="font-family:sans-serif;color:#0f172a">' +
-        "🎉 Nothing overdue today — every active lead is on track.</div>",
-    });
-    return;
+  let waiting = [];
+  let inboxError = "";
+  try {
+    const inbox = getCrmInbox();
+    if (inbox.ok) {
+      waiting = inbox.chats.filter(function (c) { return c.unreadCount > 0 && c.lastRole === "user"; });
+    } else {
+      inboxError = inbox.error;
+    }
+  } catch (e) {
+    inboxError = e.message;
   }
 
-  let rows = "";
-  leads.forEach(function (l) {
-    const dayColor = l.daysOverdue === 0 ? "#d97706" : "#dc2626";
-    rows +=
-      "<tr>" +
-      '<td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;font-weight:700;color:' +
-      dayColor +
-      '">' +
-      (l.daysOverdue === 0 ? "Today" : l.daysOverdue + "d") +
-      "</td>" +
-      '<td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">' +
-      l.parentName +
-      (l.childName ? " / " + l.childName : "") +
-      "</td>" +
-      '<td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">' +
-      l.phone +
-      "</td>" +
-      '<td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">' +
-      l.status +
-      "</td>" +
-      '<td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;font-size:12px;color:#475569">' +
-      (l.lastNote || "—") +
-      "</td>" +
-      "</tr>";
-  });
+  const h2 = function (t) { return '<h3 style="color:#4361ee;margin:20px 0 6px">' + t + "</h3>"; };
+  let html = '<div style="font-family:sans-serif;color:#0f172a;max-width:680px">' +
+    '<h2 style="margin-bottom:2px">GLO CRM: good morning</h2>' +
+    '<p style="color:#475569;margin-top:0">' + today + "</p>";
 
-  const html =
-    '<div style="font-family:sans-serif;color:#0f172a;max-width:640px">' +
-    '<h2 style="color:#4361ee;margin-bottom:4px">GLO CRM — Overdue Follow-ups</h2>' +
-    '<p style="color:#475569;margin-top:0">' +
-    leads.length +
-    " lead" +
-    (leads.length !== 1 ? "s" : "") +
-    " need a follow-up as of " +
-    today +
-    ".</p>" +
-    '<table style="border-collapse:collapse;width:100%;font-size:13px">' +
-    '<tr style="background:#f0f3fa;text-align:left">' +
-    '<th style="padding:8px 12px">Overdue</th><th style="padding:8px 12px">Lead</th>' +
-    '<th style="padding:8px 12px">Phone</th><th style="padding:8px 12px">Status</th>' +
-    '<th style="padding:8px 12px">Last Note</th></tr>' +
-    rows +
-    "</table>" +
-    "</div>";
+  html += h2("🆕 New leads since yesterday (" + newLeads.length + ")");
+  html += newLeads.length
+    ? digestTable_(["Lead", "Phone", "Source", "Status"], newLeads.map(function (l) {
+        return ["#" + l.id + " " + digestEsc_(l.parentName) + (l.childName ? " / " + digestEsc_(l.childName) : ""), digestEsc_(l.phone), digestEsc_(l.source || "—"), digestEsc_(l.status)];
+      }))
+    : "<p>No new leads.</p>";
+
+  html += h2("💬 Parents waiting for a reply on WhatsApp (" + waiting.length + ")");
+  html += inboxError
+    ? '<p style="color:#b45309">Could not load WhatsApp chats: ' + digestEsc_(inboxError) + "</p>"
+    : waiting.length
+      ? digestTable_(["Parent", "Last message", "Unread"], waiting.map(function (c) {
+          return [digestEsc_(c.parentName || c.phone) + (c.lead ? " (#" + c.lead.id + ")" : " (not in CRM)"), digestEsc_(String(c.lastMessage || "").slice(0, 120)), String(c.unreadCount)];
+        }))
+      : "<p>Nobody is waiting.</p>";
+
+  html += h2("⏰ Overdue follow-ups (" + overdue.length + ")");
+  html += overdue.length
+    ? digestTable_(["Overdue", "Lead", "Phone", "Status", "Last note"], overdue.map(function (l) {
+        const color = l.daysOverdue === 0 ? "#d97706" : "#dc2626";
+        return ['<b style="color:' + color + '">' + (l.daysOverdue === 0 ? "Today" : l.daysOverdue + "d") + "</b>", digestEsc_(l.parentName) + (l.childName ? " / " + digestEsc_(l.childName) : ""), digestEsc_(l.phone), digestEsc_(l.status), digestEsc_(l.lastNote || "—")];
+      }))
+    : "<p>🎉 Nothing overdue. Every active lead is on track.</p>";
+
+  html += "</div>";
 
   MailApp.sendEmail({
-    to: DIGEST_EMAIL,
-    subject:
-      "GLO CRM — " +
-      leads.length +
-      " overdue follow-up" +
-      (leads.length !== 1 ? "s" : "") +
-      " (" +
-      today +
-      ")",
+    to: digestRecipients_(),
+    subject: "GLO CRM " + today + ": " + newLeads.length + " new, " + waiting.length + " waiting on WhatsApp, " + overdue.length + " overdue",
     htmlBody: html,
   });
 }
@@ -537,11 +556,9 @@ function createDailyDigestTrigger() {
     if (t.getHandlerFunction() === DIGEST_TRIGGER_FN) ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger(DIGEST_TRIGGER_FN).timeBased().atHour(8).everyDays(1).create();
-  SpreadsheetApp.getUi().alert(
+  Logger.log(
     "Daily digest scheduled — you'll get an email every morning around 8 AM " +
-      "listing any overdue follow-ups, sent to " +
-      DIGEST_EMAIL +
-      ".",
+      "listing any overdue follow-ups, sent to " + digestRecipients_() + ".",
   );
 }
 
@@ -623,6 +640,7 @@ function getStats() {
       overdue: 0,
       dueToday: 0,
       bySource: {},
+      convertedBySource: {},
       byStatus: {},
     };
 
@@ -659,7 +677,7 @@ function getStats() {
 
       // FIX: Use safeSource() to prevent Date objects appearing as source labels
       const src = safeSource(data[i][COL.SOURCE - 1]);
-      s.bySource[src] = (s.bySource[src] || 0) + 1;
+      s.bySource[src] = (s.bySource[src] || 0) + 1; if (st === "Converted") s.convertedBySource[src] = (s.convertedBySource[src] || 0) + 1;
 
       // Overdue / due today — only active leads
       if (ACTIVE_STATUSES.includes(st)) {

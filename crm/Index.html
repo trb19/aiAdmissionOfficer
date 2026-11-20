@@ -347,6 +347,8 @@
   .chat-window{font-size:12px;padding:6px 10px;border-radius:8px;flex:1;min-width:180px}
   .chat-window.open{background:var(--green-light);color:var(--green)}
   .chat-window.closed{background:var(--yellow-light);color:var(--yellow)}
+  .chat-quick{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+  .chat-quick .btn-sm{min-height:36px}
 </style>
 </head>
 <body>
@@ -790,7 +792,14 @@
       <div id="chatMessages" style="max-height:360px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--border);border-radius:8px"></div>
       <div class="field" style="margin-top:10px">
         <label>Send a reply</label>
-        <textarea id="chatReplyMsg" placeholder="Type your reply…"></textarea>
+        <div class="chat-quick" id="chatQuickReplies">
+          <button type="button" class="btn-sm" onclick="useQuickReply('visit')">🏫 Visit</button>
+          <button type="button" class="btn-sm" onclick="useQuickReply('timings')">🕘 Timings</button>
+          <button type="button" class="btn-sm" onclick="useQuickReply('location')">📍 Location</button>
+          <button type="button" class="btn-sm" onclick="useQuickReply('ages')">👶 Age &amp; class</button>
+          <button type="button" class="btn-sm" onclick="useQuickReply('fees')">💰 Fees</button>
+        </div>
+        <textarea id="chatReplyMsg" placeholder="Type your reply, or tap a saved reply above…"></textarea>
       </div>
       <button class="btn-primary" id="chatSendBtn" style="background:var(--wa-accent)" onclick="sendChatReply(this)">💬 Send &amp; Pause Bot 2h</button>
       <div id="chatTemplateBox" style="display:none;margin-top:12px">
@@ -2069,6 +2078,23 @@ function closeChatModalBg(e) {
   if (e.target === document.getElementById('chatModalOverlay')) closeChatModal();
 }
 
+// Saved replies for the chat window. Wording follows the bot's approved facts (src/facts.ts):
+// no fee amounts on WhatsApp, visits any day but Sunday 1-3 pm. Tapping one fills the box so
+// staff can edit it before sending; it never sends by itself.
+var QUICK_REPLIES = {
+  visit: "You're most welcome to visit GLO any day except Sunday, between 1 and 3 pm. Which day suits you? We'll keep a slot ready for you.",
+  timings: "School (Playgroup to Sr. KG): 9:30 am to 12:30 pm.\nDaycare: 8:30 am to 5:30 pm.\nOffice: 9 am to 4 pm.",
+  location: "We're at Bylane 3, Baroholia, Tezpur.\nLocation: https://maps.app.goo.gl/rsHjmAdNVXp3MCqBA",
+  ages: "Ideal ages (as of 1 April): Playgroup from 18 months, Nursery from 3 years, Jr. KG from 4, Sr. KG from 5. Daycare from 1 year. We'll confirm the exact class from your child's date of birth.",
+  fees: "Our admission coordinator will call you with the fee details. What's a good time to call you?"
+};
+function useQuickReply(key) {
+  var box = document.getElementById('chatReplyMsg');
+  var text = QUICK_REPLIES[key] || '';
+  box.value = box.value.trim() ? box.value.trim() + '\n\n' + text : text;
+  box.focus();
+}
+
 function sendChatReply(btnEl) {
   if (!chatTargetLead) return;
   if (chatSendInFlight) return;
@@ -2187,8 +2213,10 @@ function loadDashboard() {
 
       var srcHtml = src.map(function(entry) {
         var k = entry[0], v = entry[1];
+        var won = (s.convertedBySource || {})[k] || 0;
+        var pct = v ? Math.round(won / v * 100) : 0;
         return '<div class="src-bar">'
-          + '<div class="src-lbl"><span>' + esc(k) + '</span><strong>' + v + '</strong></div>'
+          + '<div class="src-lbl"><span>' + esc(k) + '</span><strong>' + v + ' leads · ' + won + ' joined (' + pct + '%)</strong></div>'
           + '<div class="src-track"><div class="src-fill" style="width:' + Math.round(v/mx*100) + '%"></div></div>'
           + '</div>';
       }).join('');
@@ -2340,6 +2368,7 @@ window.openChatFromInbox = openChatFromInbox;
 window.toggleChatPause   = toggleChatPause;
 window.sendChatTemplate  = sendChatTemplate;
 window.addChatAsLead     = addChatAsLead;
+window.useQuickReply     = useQuickReply;
 window.loadDashboard         = loadDashboard;
 </script>
 </body>
