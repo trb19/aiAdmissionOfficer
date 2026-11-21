@@ -13,7 +13,7 @@ const LOG_SHEET = "FollowUps";
 
 // FIX: Verified column indices match the actual sheet layout exactly
 // A=ID, B=DateInquiry, C=ChildName, D=Class, E=ParentName, F=Phone,
-// G=Age, H=Status, I=LastContact, J=NextFollowup, K=Source, L=Remarks, M=Address
+// G=Age, H=Status, I=LastContact, J=NextFollowup, K=Source, L=Remarks, M=Address, N=Quality
 const COL = {
   ID: 1,
   DATE_INQUIRY: 2,
@@ -28,6 +28,7 @@ const COL = {
   SOURCE: 11,
   REMARKS: 12,
   ADDRESS: 13,
+  QUALITY: 14, // Lead check: Hot / Warm / Cold / Spam (see scoreLead_)
 };
 
 // Active statuses — Converted and Lost are excluded from overdue
@@ -135,6 +136,7 @@ function rowToLead(row) {
     source: safeSource(row[COL.SOURCE - 1]),
     remarks: String(row[COL.REMARKS - 1] || ""),
     address: String(row[COL.ADDRESS - 1] || ""),
+    quality: String(row[COL.QUALITY - 1] || ""),
   };
 }
 
@@ -160,7 +162,9 @@ function addLead(data) {
       data.source || "",
       data.remarks || "",
       data.address || "",
+      data.quality || "",
     ]);
+    if (data.quality) ensureQualityHeader_(sheet);
 
     const r = sheet.getLastRow();
     sheet.getRange(r, COL.DATE_INQUIRY).setNumberFormat("dd-MMM-yyyy");
@@ -272,6 +276,10 @@ function updateLeadFull(data) {
     sheet.getRange(targetRow, COL.SOURCE).setValue(data.source || "");
     sheet.getRange(targetRow, COL.REMARKS).setValue(data.remarks || "");
     sheet.getRange(targetRow, COL.ADDRESS).setValue(data.address || "");
+    if (data.quality !== undefined) {
+      sheet.getRange(targetRow, COL.QUALITY).setValue(data.quality || "");
+      if (data.quality) ensureQualityHeader_(sheet);
+    }
 
     if (dInq) sheet.getRange(targetRow, COL.DATE_INQUIRY).setNumberFormat("dd-MMM-yyyy");
     if (dLc) sheet.getRange(targetRow, COL.LAST_CONTACT).setNumberFormat("dd-MMM-yyyy");
@@ -409,6 +417,7 @@ function getOverdueRaw_() {
 
     // FIX: Skip Converted and Lost — they are closed leads
     if (!ACTIVE_STATUSES.includes(st)) continue;
+    if (isSpamRow_(data[i])) continue;
 
     const nf = data[i][COL.NEXT_FOLLOWUP - 1];
     if (!nf) continue;
@@ -485,6 +494,7 @@ function getNewLeadsForDigest_() {
   for (let i = 1; i < data.length; i++) {
     const d = data[i][COL.DATE_INQUIRY - 1];
     if (!(d instanceof Date) || d < since || !String(data[i][COL.PARENT_NAME - 1] || data[i][COL.PHONE - 1] || "").trim()) continue;
+    if (isSpamRow_(data[i])) continue;
     out.push(rowToLead(data[i]));
   }
   return out;
@@ -642,12 +652,21 @@ function getStats() {
       bySource: {},
       convertedBySource: {},
       byStatus: {},
+      byQuality: {},
+      spam: 0,
     };
 
     for (let i = 1; i < data.length; i++) {
       const pn = String(data[i][COL.PARENT_NAME - 1] || "").trim();
       if (!pn) continue;
+      // Spam leads are kept in the sheet but left out of every count.
+      if (isSpamRow_(data[i])) {
+        s.spam++;
+        continue;
+      }
       s.total++;
+      const q = String(data[i][COL.QUALITY - 1] || "").trim() || "Not checked";
+      s.byQuality[q] = (s.byQuality[q] || 0) + 1;
 
       const st = String(data[i][COL.STATUS - 1] || "");
       // FIX: Every status maps to exactly one bucket
@@ -1213,21 +1232,39 @@ function createCallbackAlertTrigger() {
   Logger.log("Call-back alerts on: checked every 15 minutes, emailed to " + digestRecipients_() + ".");
 }
 
-// ── WEBSITE FORM → CRM ───────────────────────────────────────
-// Elementor's form "Webhook" action posts here:  <web app URL>?key=<FORM_WEBHOOK_KEY>
-// FORM_WEBHOOK_KEY lives only in Script Properties. A known phone number gets a dated remark on
-// its existing lead instead of a duplicate. Field names are matched loosely (Elementor sends the
-// field labels, and they differ between the home page and contact page forms).
+// ── FORM LEADS → CRM (website form + Google Ads lead forms) ──
+// Two senders post to this web app's URL:
+//  - Elementor's form "Webhook" action:  <web app URL>?key=<FORM_WEBHOOK_KEY>  (form fields)
+//  - Google Ads lead form webhook:       <web app URL>, with <GOOGLE_LEAD_KEY> as the "Key" in
+//    Google Ads. Google sends JSON and puts that key in the body as "google_key".
+// Both keys live only in Script Properties. A known phone number gets a dated remark on its existing
+// lead instead of a duplicate. Every new lead gets a lead check (Hot / Warm / Cold / Spam), and,
+// when LEAD_WELCOME_TEMPLATE is set, a WhatsApp welcome so a reply can prove it's a real parent.
 function doPost(e) {
   const out = function (obj) {
     return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
   };
   try {
-    const expected = PropertiesService.getScriptProperties().getProperty("FORM_WEBHOOK_KEY");
+    const props = PropertiesService.getScriptProperties();
+    const raw = e && e.postData && e.postData.contents;
+    let json = null;
+    if (raw && /^\s*\{/.test(raw)) {
+      try {
+        json = JSON.parse(raw);
+      } catch (err) {
+        json = null;
+      }
+    }
+    if (json && json.google_key !== undefined) {
+      const gkey = props.getProperty("GOOGLE_LEAD_KEY");
+      if (!gkey || String(json.google_key) !== gkey) return out({ ok: false, error: "unauthorised" });
+      return out(saveFormLead_(parseGoogleLead_(json)));
+    }
+
+    const expected = props.getProperty("FORM_WEBHOOK_KEY");
     const p = (e && e.parameter) || {};
     if (!expected || p.key !== expected) return out({ ok: false, error: "unauthorised" });
-    const lead = parseWebsiteForm_(p);
-    return out(saveWebsiteEnquiry_(lead));
+    return out(saveFormLead_(parseWebsiteForm_(p)));
   } catch (err) {
     return out({ ok: false, error: err.message });
   }
@@ -1247,20 +1284,76 @@ function parseWebsiteForm_(p) {
     for (const k in p) if (k !== "key" && normalizePhone_(p[k])) { phone = p[k]; break; }
   }
   return {
+    kind: "Website form",
+    source: "Website",
     parentName: pick(/^(your )?name|parent|full.?name/i) || pick(/name/i),
-    childName: pick(/child|kid|ward/i),
+    childName: pick(/child'?s?.?name|kid|ward/i),
+    childAge: pick(/(^|[^a-z])age\b|dob|birth|how old/i),
     phone: phone,
     email: pick(/e-?mail/i),
+    area: pick(/address|city|area|locality|pin|zip/i),
     message: pick(/message|query|comment|enquiry|inquiry|question/i),
+    honeypot: pick(/honeypot|hp_|leave.?blank|website_url/i),
     page: String(p.form_name || p.referer_title || p.page_url || ""),
   };
 }
 
-function saveWebsiteEnquiry_(f) {
+// Google Ads lead form webhook body: { lead_id, user_column_data: [{ column_id, column_name,
+// string_value }], campaign_id, gcl_id, is_test, google_key, ... }. Standard questions have fixed
+// column_ids (FULL_NAME, PHONE_NUMBER, EMAIL, CITY, POSTAL_CODE...); custom questions are matched
+// by their question text.
+function parseGoogleLead_(body) {
+  const cols = body.user_column_data || [];
+  const byId = {};
+  const extras = [];
+  let childAge = "";
+  let childName = "";
+  cols.forEach(function (c) {
+    const id = String(c.column_id || "").toUpperCase();
+    const label = String(c.column_name || id);
+    const v = String(c.string_value || "").trim();
+    if (!v) return;
+    if (/^(FULL_NAME|FIRST_NAME|LAST_NAME|PHONE_NUMBER|EMAIL|WORK_EMAIL|WORK_PHONE|CITY|POSTAL_CODE|REGION|STREET_ADDRESS|COUNTRY)$/.test(id)) {
+      byId[id] = v;
+    } else if (/age|dob|birth|how old/i.test(label)) {
+      childAge = v;
+    } else if (/child|kid|ward|son|daughter/i.test(label)) {
+      childName = v;
+    } else {
+      extras.push(label + ": " + v);
+    }
+  });
+  const name = byId.FULL_NAME || [byId.FIRST_NAME, byId.LAST_NAME].filter(Boolean).join(" ");
+  return {
+    kind: "Google Ads lead form" + (body.is_test ? " (TEST from Google, delete me)" : ""),
+    source: "Google Ads",
+    parentName: name,
+    childName: childName,
+    childAge: childAge,
+    phone: byId.PHONE_NUMBER || byId.WORK_PHONE || "",
+    email: byId.EMAIL || byId.WORK_EMAIL || "",
+    area: [byId.STREET_ADDRESS, byId.CITY, byId.REGION, byId.POSTAL_CODE].filter(Boolean).join(", "),
+    message: extras.join(" · "),
+    honeypot: "",
+    page: body.campaign_id ? "campaign " + body.campaign_id : "",
+  };
+}
+
+function saveFormLead_(f) {
   const phone = normalizePhone_(f.phone);
-  const note = "[" + fmtLog(new Date()) + "] Website form" + (f.page ? " (" + f.page + ")" : "") + ": " +
-    [f.message, f.email ? "Email: " + f.email : ""].filter(String).join(" · ");
   if (!phone && !f.email) return { ok: false, error: "No phone or email in the form" };
+  const check = scoreLead_({
+    phone: f.phone,
+    name: f.parentName,
+    email: f.email,
+    childAge: f.childAge,
+    area: f.area,
+    honeypot: f.honeypot,
+  });
+  const note = "[" + fmtLog(new Date()) + "] " + f.kind + (f.page ? " (" + f.page + ")" : "") + ": " +
+    [f.message, f.childAge ? "Child's age: " + f.childAge : "", f.area ? "Area: " + f.area : "", f.email ? "Email: " + f.email : ""]
+      .filter(String).join(" · ") +
+    " · Lead check: " + check.quality + (check.reasons.length ? " (" + check.reasons.join(", ") + ")" : "");
 
   if (phone) {
     const existing = leadsByPhone_()[phone];
@@ -1272,17 +1365,180 @@ function saveWebsiteEnquiry_(f) {
           const old = String(rows[i][COL.REMARKS - 1] || "").trim();
           sheet.getRange(i + 1, COL.REMARKS).setValue(old ? old + "\n" + note : note);
           sheet.getRange(i + 1, COL.LAST_CONTACT).setValue(new Date()).setNumberFormat("dd-MMM-yyyy");
-          return { ok: true, id: existing.id, existing: true };
+          // Same rule as the bot: only a blank label is filled; Hot / Cold / Spam already set stays.
+          if (!String(rows[i][COL.QUALITY - 1] || "").trim()) {
+            sheet.getRange(i + 1, COL.QUALITY).setValue(check.quality);
+            ensureQualityHeader_(sheet);
+          }
+          return { ok: true, id: existing.id, existing: true, quality: check.quality };
         }
       }
     }
   }
-  return addLead({
-    parentName: f.parentName || "Website enquiry",
+  const res = addLead({
+    parentName: f.parentName || (f.source === "Google Ads" ? "Google Ads enquiry" : "Website enquiry"),
     childName: f.childName,
+    age: f.childAge,
     phone: phone || "",
     status: "Open",
-    source: "Website",
+    source: f.source,
     remarks: note,
+    address: f.area,
+    quality: check.quality,
   });
+  if (res.ok && phone && check.quality !== "Spam") res.welcome = sendLeadWelcome_(phone, f.parentName);
+  res.quality = check.quality;
+  return res;
+}
+
+// Kept for anything still calling the old name.
+function saveWebsiteEnquiry_(f) {
+  f.kind = f.kind || "Website form";
+  f.source = f.source || "Website";
+  return saveFormLead_(f);
+}
+
+// WhatsApp welcome to a new form lead, through the bot (POST /send-template). The template is set
+// in Script Properties: LEAD_WELCOME_TEMPLATE (an approved template whose body has one {{1}} for
+// the parent's first name) and optionally LEAD_WELCOME_LANG (default "en"). pauseMinutes 0 keeps
+// the bot answering, so it can reply when the parent writes back. Never throws.
+function sendLeadWelcome_(phone10, parentName) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const template = props.getProperty("LEAD_WELCOME_TEMPLATE");
+    if (!template) return "off";
+    const first = String(parentName || "").trim().split(/\s+/)[0] || "there";
+    crmBackend_("post", "/send-template", {
+      phone: normalizePhoneForApi_(phone10),
+      templateName: template,
+      languageCode: props.getProperty("LEAD_WELCOME_LANG") || "en",
+      bodyVariables: [first],
+      pauseMinutes: 0,
+    });
+    return "sent";
+  } catch (err) {
+    Logger.log("Lead welcome failed: " + err.message);
+    return "failed";
+  }
+}
+
+// ── LEAD CHECK (Hot / Warm / Cold / Spam) ────────────────────
+// Same rules as the bot's src/leadQuality.ts; keep the two in step.
+//   Spam  junk or invalid phone, junk name, throwaway email, spam-trap field filled, no contact.
+//         (Not applied to a parent who messaged on WhatsApp: WhatsApp has proved the number.)
+//   Cold  child's age outside 1 to 6.5 years, or a PIN code outside 784xxx (Sonitpur).
+//   Hot   the parent has written to us on WhatsApp (the bot sets this when they do).
+//   Warm  everything else.
+function isSpamRow_(row) {
+  return String(row[COL.QUALITY - 1] || "").trim() === "Spam";
+}
+
+function ensureQualityHeader_(sheet) {
+  const cell = sheet.getRange(1, COL.QUALITY);
+  if (!String(cell.getValue() || "").trim()) cell.setValue("Quality");
+}
+
+function indianMobile_(phone) {
+  let d = String(phone || "").replace(/\D/g, "");
+  if (d.length > 10 && /^(91|0)/.test(d)) d = d.slice(-10);
+  return /^[6-9]\d{9}$/.test(d) ? d : "";
+}
+
+const LEAD_JUNK_NUMBERS = ["1234567890", "9876543210", "0123456789", "9123456789", "9999988888", "9988776655"];
+const LEAD_JUNK_NAMES = /^(test|testing|tester|asdf\w*|qwerty|abc|abcd|xyz|na|n\/a|none|null|nil|fake|demo|sample|hello|hi|hii|ok|aaa+|xxx+|zzz+|sdf\w*)$/i;
+const LEAD_THROWAWAY_EMAIL = /@(mailinator|guerrillamail|sharklasers|10minutemail|tempmail|temp-mail|yopmail|trashmail|getnada|dispostable|maildrop|fakeinbox|throwawaymail)\./i;
+const LEAD_LOCAL_AREA = /tezpur|sonitpur|dhekiajuli|balipara|rangapara|misamari|biswanath|jamugurihat|bihaguri/i;
+
+function isJunkName_(name) {
+  const n = String(name || "").trim();
+  if (!n) return false;
+  if (!/[A-Za-zऀ-৿]/.test(n)) return true; // no letters (English, Hindi or Assamese)
+  if (LEAD_JUNK_NAMES.test(n)) return true;
+  const letters = n.replace(/[^a-z]/gi, "");
+  return letters.length >= 5 && !/[aeiouy]/i.test(letters);
+}
+
+function parseAgeYears_(text) {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return null;
+  const now = new Date();
+  let m = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/);
+  if (m) {
+    const born = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+    if (!isNaN(born.getTime())) return (now - born) / (365.25 * 864e5);
+  }
+  m = t.match(/\b(20\d{2})\b/);
+  if (m && Number(m[1]) <= now.getFullYear()) return now.getFullYear() - Number(m[1]);
+  m = t.match(/(\d+(?:\.\d+)?)\s*(?:years?|yrs?|y)\b\D*(\d+)\s*(?:months?|mons?|mths?|m)\b/);
+  if (m) return Number(m[1]) + Number(m[2]) / 12;
+  m = t.match(/(\d+(?:\.\d+)?)\s*(?:months?|mons?|mths?|mos?)\b/);
+  if (m) return Number(m[1]) / 12;
+  m = t.match(/(\d+(?:\.\d+)?)\s*(?:years?|yrs?|y)?\b/);
+  if (m && Number(m[1]) <= 12) return Number(m[1]);
+  return null;
+}
+
+function scoreLead_(f) {
+  const spam = [];
+  const cold = [];
+  const good = [];
+  if (!f.repliedOnWhatsApp) {
+    const mobile = indianMobile_(f.phone);
+    if (f.phone && !mobile) spam.push("phone is not a valid Indian mobile");
+    else if (mobile && (/^(\d)\1{6,}/.test(mobile) || LEAD_JUNK_NUMBERS.indexOf(mobile) >= 0)) spam.push("phone looks made up");
+    else if (mobile) good.push("valid mobile");
+    if (!f.phone && !f.email) spam.push("no phone or email");
+    if (isJunkName_(f.name)) spam.push('name looks fake ("' + String(f.name).trim() + '")');
+    if (f.email && LEAD_THROWAWAY_EMAIL.test(f.email)) spam.push("throwaway email address");
+    if (f.honeypot && String(f.honeypot).trim()) spam.push("spam-trap field was filled (a bot)");
+  }
+  if (spam.length) return { quality: "Spam", reasons: spam };
+
+  const age = parseAgeYears_(f.childAge);
+  if (age !== null) {
+    const label = age < 2 ? Math.round(age * 12) + " months" : Math.round(age * 10) / 10 + " years";
+    if (age < 1 || age > 6.5) cold.push("child is " + label + ", outside 1 to 6½ years");
+    else good.push("child " + label + " fits");
+  }
+  const area = String(f.area || "");
+  const pin = area.match(/\b(\d{6})\b/);
+  if (pin && pin[1].indexOf("784") !== 0) cold.push("PIN " + pin[1] + " is outside Sonitpur");
+  else if (pin || LEAD_LOCAL_AREA.test(area)) good.push("local area");
+  if (cold.length) return { quality: "Cold", reasons: cold };
+
+  if (f.repliedOnWhatsApp) return { quality: "Hot", reasons: ["messaged on WhatsApp"].concat(good) };
+  return { quality: "Warm", reasons: good.length ? good : ["no reply on WhatsApp yet"] };
+}
+
+// Run once from the editor to check the rules on sample leads (see the log).
+function testLeadCheck() {
+  const cases = [
+    [{ phone: "9999999999", name: "Rahul" }, "Spam"],
+    [{ phone: "12345", name: "Rahul" }, "Spam"],
+    [{ phone: "9864012345", name: "test" }, "Spam"],
+    [{ phone: "9864012345", name: "Rahul", email: "a@mailinator.com" }, "Spam"],
+    [{ phone: "9864012345", name: "Rahul", childAge: "3" }, "Warm"],
+    [{ phone: "9864012345", name: "Rahul", childAge: "9 years" }, "Cold"],
+    [{ phone: "9864012345", name: "Rahul", area: "Guwahati 781006" }, "Cold"],
+    [{ phone: "+91 98640 12345", name: "Anita Bora", area: "Tezpur 784001", childAge: "18 months" }, "Warm"],
+  ];
+  let pass = 0;
+  cases.forEach(function (c) {
+    const got = scoreLead_(c[0]).quality;
+    if (got === c[1]) pass++;
+    else Logger.log("FAIL " + JSON.stringify(c[0]) + " -> " + got + ", expected " + c[1]);
+  });
+  const g = parseGoogleLead_({
+    google_key: "x",
+    is_test: true,
+    user_column_data: [
+      { column_id: "FULL_NAME", string_value: "Anita Bora" },
+      { column_id: "PHONE_NUMBER", string_value: "+919864012345" },
+      { column_id: "POSTAL_CODE", string_value: "784001" },
+      { column_name: "What is your child's age?", column_id: "q1", string_value: "3 years" },
+    ],
+  });
+  if (g.parentName === "Anita Bora" && g.childAge === "3 years" && normalizePhone_(g.phone) === "9864012345") pass++;
+  else Logger.log("FAIL Google lead parse: " + JSON.stringify(g));
+  Logger.log("Lead check: " + pass + "/" + (cases.length + 1) + " passed");
 }

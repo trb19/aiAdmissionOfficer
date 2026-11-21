@@ -432,7 +432,7 @@
               <option value="">-- Select source --</option>
               <option>Insta Ads</option><option>Facebook Ads</option>
               <option>Google Ads</option><option>Phone Call</option>
-              <option>School Visit</option><option>Whatsapp</option><option>Other</option>
+              <option>School Visit</option><option>Whatsapp</option><option>Website</option><option>Other</option>
             </select></div>
           <div class="field"><label>Status</label>
             <select id="status">
@@ -470,6 +470,14 @@
             <option>Insta Ads</option><option>Facebook Ads</option>
             <option>Google Ads</option><option>Phone Call</option>
             <option>School Visit</option><option>Whatsapp</option><option>Website</option><option>Other</option>
+          </select>
+          <select id="tileQualityFilter" onchange="updateTileCounts();renderTiles()" title="Lead check"
+            style="flex:1;padding:9px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;
+            font-family:'Plus Jakarta Sans',sans-serif;color:var(--text);background:var(--surface);">
+            <option value="NoSpam">All except spam</option>
+            <option value="Hot">🔥 Hot</option><option value="Warm">🙂 Warm</option>
+            <option value="Cold">🧊 Cold</option><option value="Spam">🚫 Spam</option>
+            <option value="">Not checked</option><option value="All">All, with spam</option>
           </select>
           <select id="tileSort" onchange="renderTiles()"
             style="flex:1;padding:9px 14px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;
@@ -696,7 +704,13 @@
               <option value="">-- Select source --</option>
               <option>Insta Ads</option><option>Facebook Ads</option>
               <option>Google Ads</option><option>Phone Call</option>
-              <option>School Visit</option><option>Whatsapp</option><option>Other</option>
+              <option>School Visit</option><option>Whatsapp</option><option>Website</option><option>Other</option>
+            </select></div>
+          <div class="field"><label>Lead check</label>
+            <select id="e-quality">
+              <option value="">Not checked</option>
+              <option value="Hot">🔥 Hot</option><option value="Warm">🙂 Warm</option>
+              <option value="Cold">🧊 Cold</option><option value="Spam">🚫 Spam</option>
             </select></div>
           <div class="field"><label>Status</label>
             <select id="e-status">
@@ -1209,8 +1223,11 @@ function loadLeads() {
 
 function updateTileCounts() {
   var counts = {};
-  allLeads.forEach(function(l){ counts[l.status] = (counts[l.status]||0)+1; });
-  var total = allLeads.length;
+  // Spam is left out of the counts unless the lead-check filter is showing it.
+  var qSel = (document.getElementById('tileQualityFilter') || {}).value;
+  var counted = (qSel === 'Spam' || qSel === 'All') ? allLeads : allLeads.filter(function(l){ return l.quality !== 'Spam'; });
+  counted.forEach(function(l){ counts[l.status] = (counts[l.status]||0)+1; });
+  var total = counted.length;
 
   var el = document.getElementById('cnt-All');
   if (el) el.textContent = total ? (' (' + total + ')') : '';
@@ -1239,6 +1256,8 @@ function getFilteredSortedLeads() {
   var leads = allLeads.filter(function(l) {
     if (activeTileFilter !== 'All' && l.status !== activeTileFilter) return false;
     if (srcSel !== 'All' && l.source !== srcSel) return false;
+    var qSel = document.getElementById('tileQualityFilter').value;
+    if (qSel === 'NoSpam' ? l.quality === 'Spam' : (qSel !== 'All' && (l.quality || '') !== qSel)) return false;
     if (q) {
       var hay = (l.parentName + ' ' + l.childName + ' ' + l.phone + ' ' + l.id).toLowerCase();
       if (hay.indexOf(q) === -1) return false;
@@ -1273,6 +1292,32 @@ function getFilteredSortedLeads() {
   }
 
   return leads;
+}
+
+// Lead check label (column N): set automatically, staff can change it in Edit.
+var QUALITY_LOOK = {
+  Hot:  { icon: '🔥', bg: '#fde8e4', fg: '#b3261e', tip: 'Replied on WhatsApp' },
+  Warm: { icon: '🙂', bg: '#fff4d6', fg: '#8a5a00', tip: 'Real-looking lead, no WhatsApp reply yet' },
+  Cold: { icon: '🧊', bg: '#e3f0fb', fg: '#1b5e9a', tip: 'Child\'s age or area doesn\'t fit' },
+  Spam: { icon: '🚫', bg: '#eeeeee', fg: '#555555', tip: 'Fake or junk details; left out of counts' },
+};
+function qualityTag(q) {
+  var look = QUALITY_LOOK[q];
+  if (!look) return '';
+  return '<span class="tile-tag" title="' + look.tip + '" style="background:' + look.bg + ';color:' + look.fg + ';font-weight:700">'
+    + look.icon + ' ' + q + '</span>';
+}
+
+// A source written by the bot or a form ("Website", "Google Ads"...) may not be in the dropdown;
+// add it so opening Edit and saving never wipes the Source.
+function setSelectValue(id, value) {
+  var sel = document.getElementById(id);
+  if (value && !Array.prototype.some.call(sel.options, function(o){ return o.value === value; })) {
+    var opt = document.createElement('option');
+    opt.textContent = value; opt.value = value;
+    sel.appendChild(opt);
+  }
+  sel.value = value || '';
 }
 
 function renderTiles() {
@@ -1318,6 +1363,7 @@ function renderTiles() {
       + (l.classInt ? '<span class="tile-tag">🎓 ' + esc(l.classInt) + '</span>' : '')
       + (l.age      ? '<span class="tile-tag" title="Recorded: ' + esc(l.age) + '">🎂 ' + esc(currentAgeLabel(l.age, l.dateInquiry) || l.age) + '</span>'      : '')
       + (l.source   ? '<span class="tile-tag">📣 ' + esc(l.source) + '</span>'   : '')
+      + qualityTag(l.quality)
       + '</div>'
       + (rmk ? '<div class="tile-remarks">' + esc(rmk) + '</div>' : '')
       + '<div class="tile-footer">'
@@ -1347,7 +1393,7 @@ function openModal(id) {
   document.getElementById('m-child').textContent = l.childName || '—';
   document.getElementById('m-age').textContent   = (l.age ? (currentAgeLabel(l.age, l.dateInquiry) ? currentAgeLabel(l.age, l.dateInquiry) + ' now (recorded ' + l.age + ')' : l.age) : '—');
   document.getElementById('m-class').textContent = l.classInt  || '—';
-  document.getElementById('m-source').textContent= l.source    || '—';
+  document.getElementById('m-source').innerHTML  = esc(l.source || '—') + (l.quality ? ' ' + qualityTag(l.quality) : '');
   document.getElementById('m-date').textContent  = fmtDate(l.dateInquiry)  || '—';
   document.getElementById('m-lc').textContent    = fmtDate(l.lastContact)  || '—';
   document.getElementById('m-nf').textContent    = fmtDate(l.nextFollowup) || '—';
@@ -1392,7 +1438,8 @@ function enterEditMode() {
   document.getElementById('e-child').value   = l.childName || '';
   document.getElementById('e-age').value     = l.age || '';
   document.getElementById('e-class').value   = l.classInt || '';
-  document.getElementById('e-source').value  = l.source || '';
+  setSelectValue('e-source', l.source || '');
+  document.getElementById('e-quality').value = l.quality || '';
   document.getElementById('e-status').value  = l.status || 'Open';
   document.getElementById('e-dateinq').value      = toISODate(l.dateInquiry);
   document.getElementById('e-lastcontact').value  = toISODate(l.lastContact);
@@ -1425,6 +1472,7 @@ function saveLeadEdit() {
     age:          document.getElementById('e-age').value.trim(),
     classInt:     document.getElementById('e-class').value,
     source:       document.getElementById('e-source').value,
+    quality:      document.getElementById('e-quality').value,
     status:       document.getElementById('e-status').value,
     dateInquiry:  document.getElementById('e-dateinq').value,
     lastContact:  document.getElementById('e-lastcontact').value,
@@ -2253,6 +2301,7 @@ function loadDashboard() {
         + '<div class="stat-card"><div class="stat-num" style="font-size:26px;color:var(--muted)">' + pipeline + '</div><div class="stat-lbl">Pipeline (active)</div></div>'
         + otherRow
         + '</div>'
+        + qualityRow(s)
         + '<div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px">Leads by Source</div>'
         + srcHtml;
     })
@@ -2261,6 +2310,16 @@ function loadDashboard() {
         '<div class="err-box">⚠️ Error: ' + e.message + '</div>';
     })
     .getStats();
+}
+
+// "Lead check: 🔥 4 Hot · 🙂 9 Warm · 🧊 2 Cold · 🚫 3 spam (not counted)"
+function qualityRow(s) {
+  var bq = s.byQuality || {};
+  var parts = ['Hot', 'Warm', 'Cold'].filter(function(k){ return bq[k]; })
+    .map(function(k){ return QUALITY_LOOK[k].icon + ' ' + bq[k] + ' ' + k; });
+  if (s.spam) parts.push('🚫 ' + s.spam + ' spam (not counted)');
+  if (!parts.length) return '';
+  return '<div style="font-size:13px;color:var(--text2);margin:-8px 0 18px">Lead check: ' + parts.join(' · ') + '</div>';
 }
 
 function loadConversionTrend() {
@@ -2338,6 +2397,7 @@ window.closeDupModalBg       = closeDupModalBg;
 window.confirmSaveDespiteDup = confirmSaveDespiteDup;
 window.loadLeads             = loadLeads;
 window.renderTiles           = renderTiles;
+window.updateTileCounts      = updateTileCounts;
 window.setTileFilter         = setTileFilter;
 window.openModal             = openModal;
 window.closeModalBg          = closeModalBg;

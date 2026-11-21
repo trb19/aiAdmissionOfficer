@@ -21,7 +21,9 @@ import {
   intakeAskSuffix,
 } from "./ai.js";
 import { matchFaq } from "./faq.js";
-import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime } from "./sheets.js";
+import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime, formatCrmDate } from "./sheets.js";
+import { extractLeadgenEvents, fetchMetaLead } from "./metaLeads.js";
+import { scoreLead, describeLeadCheck, indianMobile } from "./leadQuality.js";
 import {
   getRecentHistory,
   getFullConversation,
@@ -106,6 +108,16 @@ app.post("/webhook", (req, res) => {
 });
 
 async function handleWebhookEvent(body: unknown): Promise<void> {
+  // Facebook Page webhooks (Meta lead-form ads) arrive on this same URL with object "page".
+  for (const event of extractLeadgenEvents(body)) {
+    const key = `leadgen:${event.leadgenId}`;
+    if (seenMessageIds.has(key)) continue;
+    seenMessageIds.add(key);
+    void processMetaLead(event.leadgenId).catch((err) => {
+      console.error("Error processing Meta lead:", err);
+    });
+  }
+
   const messages = extractInboundMessages(body);
 
   // Photos, voice notes, documents, button taps etc. - the bot doesn't answer these, but they're
@@ -136,6 +148,64 @@ async function handleWebhookEvent(body: unknown): Promise<void> {
       console.error("Error processing message:", err);
     });
   }
+}
+
+/** A Meta lead-form lead: fetch the answers, add or update the CRM lead with its lead check, and
+ * (when LEAD_WELCOME_TEMPLATE is set) greet the parent on WhatsApp so a reply can prove the lead. */
+async function processMetaLead(leadgenId: string): Promise<void> {
+  if (!config.meta.pageAccessToken) {
+    console.warn(`Meta lead ${leadgenId} ignored: META_PAGE_ACCESS_TOKEN is not set`);
+    return;
+  }
+  const lead = await fetchMetaLead(leadgenId);
+  const mobile = indianMobile(lead.phone);
+  const waPhone = mobile ? `91${mobile}` : (lead.phone ?? "").replace(/\D/g, "");
+  if (!waPhone && !lead.email) {
+    console.warn(`Meta lead ${leadgenId} has no phone or email; skipped`);
+    return;
+  }
+  const area = [lead.city, lead.zip].filter(Boolean).join(" ");
+  const check = scoreLead({ phone: lead.phone, name: lead.name, email: lead.email, childAge: lead.childAge, area });
+  const where = [lead.campaignName, lead.adName].filter(Boolean).join(" / ");
+  const details = [
+    lead.email ? `Email: ${lead.email}` : "",
+    area ? `Area: ${area}` : "",
+    lead.childAge ? `Child's age: ${lead.childAge}` : "",
+    ...lead.extras,
+  ].filter(Boolean);
+  const note =
+    `[${formatCrmDate(new Date()).replace(/-/g, " ")}] ${lead.platform} lead form${where ? ` (${where})` : ""}` +
+    `${details.length ? ": " + details.join(" · ") : ""} · ${describeLeadCheck(check)}`;
+
+  await runSerializedByPhone(waPhone || leadgenId, async () => {
+    if (waPhone) {
+      await upsertFamilyProfile(waPhone, {
+        ...(lead.name ? { parentName: lead.name } : {}),
+        ...(lead.childName ? { childName: lead.childName } : {}),
+        ...(lead.childAge ? { childAge: lead.childAge } : {}),
+      });
+    }
+    await upsertCrmLead({
+      phone: waPhone,
+      parentName: lead.name,
+      childName: lead.childName,
+      childAge: lead.childAge,
+      address: area || undefined,
+      source: lead.platform === "Instagram" ? "Insta Ads" : "Facebook Ads",
+      note,
+      quality: check.quality,
+    });
+
+    if (config.leadWelcome.template && mobile && check.quality !== "Spam") {
+      const firstName = (lead.name ?? "").trim().split(/\s+/)[0] || "there";
+      try {
+        await sendWhatsAppTemplate(waPhone, config.leadWelcome.template, config.leadWelcome.language, [firstName]);
+        await saveMessage(waPhone, "model", `[Welcome template sent: ${config.leadWelcome.template}]`);
+      } catch (err) {
+        console.error("Lead welcome template failed:", err);
+      }
+    }
+  });
 }
 
 async function processMessage(message: InboundMessage): Promise<void> {
@@ -172,6 +242,7 @@ async function processMessage(message: InboundMessage): Promise<void> {
       childName: profile.childName ?? undefined,
       childAge: profile.childAge ?? undefined,
       remarks: summary,
+      quality: scoreLead({ phone: message.from, childAge: profile.childAge ?? undefined, repliedOnWhatsApp: true }).quality,
     });
     await upsertConversationSummary(message.from, summary, "HUMAN_HANDLING");
     return;
@@ -274,6 +345,9 @@ async function processMessage(message: InboundMessage): Promise<void> {
     childAge: latestChildAge,
     remarks: summary,
     source: message.source,
+    // They wrote to us on WhatsApp, so the number is real: Hot, or Cold if the child's age is
+    // outside what GLO takes. Only fills a blank or "Warm" label (see mergeQuality).
+    quality: scoreLead({ phone: message.from, childAge: latestChildAge, repliedOnWhatsApp: true }).quality,
   });
 
   await upsertConversationSummary(message.from, summary, classification);
@@ -293,11 +367,14 @@ app.post("/send-template", express.json(), async (req, res) => {
   // - whichever shape matches the template being sent. See the doc comment on sendWhatsAppTemplate
   // for why it's kept this simple rather than asking the caller to build Meta's own parameter
   // objects (a mismatch here is exactly what Meta rejected during testing on 18 Sept 2026).
-  const { phone, templateName, languageCode, bodyVariables } = req.body as {
+  const { phone, templateName, languageCode, bodyVariables, pauseMinutes } = req.body as {
     phone?: string;
     templateName?: string;
     languageCode?: string;
     bodyVariables?: string[] | Record<string, string>;
+    /** 0 = don't pause the bot (the CRM's automatic welcome to a new form lead, so the bot can
+     * answer their reply). Default: pause like any staff message. */
+    pauseMinutes?: number;
   };
 
   if (!phone || !templateName || !languageCode) {
@@ -310,8 +387,11 @@ app.post("/send-template", express.json(), async (req, res) => {
     // Log this as a staff-side message too, same as /send-message does, so it shows up in the CRM's
     // chat viewer transcript (getFullConversation) instead of silently vanishing - previously this
     // endpoint never touched the conversation history at all.
-    await saveMessage(phone, "staff", `WhatsApp template sent: ${templateName}`);
-    await pauseBot(phone, DEFAULT_PAUSE_MINUTES);
+    const pause = typeof pauseMinutes === "number" && pauseMinutes >= 0 ? pauseMinutes : DEFAULT_PAUSE_MINUTES;
+    // An automatic welcome is the bot's own message, not a staff takeover: saved as "model" so it
+    // doesn't clear a call-back flag or pause the bot.
+    await saveMessage(phone, pause === 0 ? "model" : "staff", `WhatsApp template sent: ${templateName}`);
+    if (pause > 0) await pauseBot(phone, pause);
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("Error sending WhatsApp template:", err);

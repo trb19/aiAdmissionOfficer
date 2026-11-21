@@ -30,8 +30,8 @@ export function detectLeadSource(msg: any): string | undefined {
   const referral = msg?.referral;
   if (referral) {
     const where = `${referral.source_url ?? ""} ${referral.source_type ?? ""}`.toLowerCase();
-    if (where.includes("instagram")) return "Instagram Ad";
-    return referral.source_type === "post" ? "Facebook Post" : "Facebook Ad";
+    // Same names staff already use in the CRM's Source list, so the dashboard groups them together.
+    return where.includes("instagram") ? "Insta Ads" : "Facebook Ads";
   }
   const text: string = msg?.text?.body ?? "";
   if (WEBSITE_MARKERS.some((re) => re.test(text.trim()))) return "Website";
