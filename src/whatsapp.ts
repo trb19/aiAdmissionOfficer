@@ -15,6 +15,27 @@ export interface InboundMessage {
   // a verified identity - could be a nickname, a child's name, or a shared family phone), so this
   // is used as a warm touch, never as a fact recorded anywhere that matters.
   parentName?: string;
+  /** Where this parent found GLO, when the message itself says so (see detectLeadSource). Only
+   * used for the CRM's Source column on a brand-new lead; undefined means plain WhatsApp. */
+  source?: string;
+}
+
+/** Text the website's WhatsApp buttons pre-fill, so a chat started from gloschools.com can be told
+ * apart from someone who saved the number. Kept loose on purpose: parents often edit the text. */
+const WEBSITE_MARKERS = [/\(website\)/i, /^hi glo!? i would like to book a school visit/i];
+
+/** Lead source for the CRM: Meta attaches a `referral` object to the first message of a chat that
+ * started from a Facebook/Instagram click-to-WhatsApp ad; website buttons pre-fill known text. */
+export function detectLeadSource(msg: any): string | undefined {
+  const referral = msg?.referral;
+  if (referral) {
+    const where = `${referral.source_url ?? ""} ${referral.source_type ?? ""}`.toLowerCase();
+    // Same names staff already use in the CRM's Source list, so the dashboard groups them together.
+    return where.includes("instagram") ? "Insta Ads" : "Facebook Ads";
+  }
+  const text: string = msg?.text?.body ?? "";
+  if (WEBSITE_MARKERS.some((re) => re.test(text.trim()))) return "Website";
+  return undefined;
 }
 
 /** Meta's webhook fires for every kind of event (message status updates, template events, etc),
@@ -40,6 +61,7 @@ export function extractInboundMessages(body: unknown): InboundMessage[] {
             text: msg.text.body,
             timestamp: msg.timestamp,
             parentName: contact?.profile?.name || undefined,
+            source: detectLeadSource(msg),
           });
         }
         // Non-text message types (image, audio, location, interactive button replies, etc.) are
@@ -114,6 +136,27 @@ export function extractInboundAttachments(body: unknown): InboundAttachment[] {
     }
   }
   return out;
+}
+
+/** Parent is asking for the brochure / prospectus / a PDF with the details. */
+export function isBrochureRequest(text: string): boolean {
+  return /\b(brochure|prospectus|pamphlet|leaflet|catalogue|catalog)\b|\bpdf\b/i.test(text);
+}
+
+/** Sends a PDF by public link (Meta fetches it). Same 24-hour-window rule as text messages. */
+export async function sendWhatsAppDocument(to: string, link: string, filename: string, caption?: string): Promise<void> {
+  const url = `${GRAPH_BASE}/${config.whatsapp.graphVersion}/${config.whatsapp.phoneNumberId}/messages`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.whatsapp.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "document",
+      document: { link, filename, ...(caption ? { caption } : {}) },
+    }),
+  });
+  if (!res.ok) throw new Error(`WhatsApp document send failed: ${res.status} ${await res.text()}`);
 }
 
 export async function sendWhatsAppText(to: string, body: string): Promise<void> {

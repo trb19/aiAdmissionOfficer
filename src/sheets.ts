@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { config } from "./config.js";
+import type { LeadQuality } from "./leadQuality.js";
 
 let sheetsClientPromise: ReturnType<typeof buildClient> | null = null;
 
@@ -219,6 +220,17 @@ export interface CrmLeadUpdate {
    * summary; a message on a new day adds a new line below it, leaving the previous day's line as
    * it was. That's what actually helps staff screen a caller quickly. */
   remarks?: string;
+  /** Source column for a NEW lead ("Website", "Facebook Ad"...). Defaults to "Whatsapp". Never
+   * overwrites the Source of an existing lead: staff may have set it from a call or visit. */
+  source?: string;
+  /** A line added to Remarks as-is (e.g. "[20 Nov 2026] Meta lead form: ..."), on its own line so a
+   * later same-day WhatsApp summary can't overwrite it. */
+  note?: string;
+  /** Filled into Address only while it is blank. */
+  address?: string;
+  /** Lead check label for column N (see src/leadQuality.ts). Written on a new lead; on an existing
+   * one it only fills a blank or upgrades "Warm", so a label staff chose (Cold, Spam) stays. */
+  quality?: LeadQuality;
 }
 
 /** Folds a new summary into Remarks as one line per calendar day - see the CrmLeadUpdate.remarks
@@ -237,6 +249,19 @@ function appendRemark(existing: string, today: string, remark: string | undefine
     return lines.join("\n");
   }
   return `${existing}\n${entry}`;
+}
+
+function addNote(remarks: string, note: string | undefined): string {
+  if (!note) return remarks;
+  return remarks ? `${remarks}\n${note}` : note;
+}
+
+/** Existing label wins, except a blank one or "Warm" (the "no reply yet" default), which new
+ * evidence such as a WhatsApp reply may change. */
+export function mergeQuality(existing: string, incoming: LeadQuality | undefined): string {
+  if (!incoming) return existing;
+  if (!existing.trim() || existing.trim() === "Warm") return incoming;
+  return existing;
 }
 
 /** Adds or updates one row per family in the shared "CRM" tab, keyed by phone number - one lead,
@@ -260,9 +285,18 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
 
     const { data } = await sheets.spreadsheets.values.get({
       spreadsheetId: config.sheets.spreadsheetId,
-      range: `${CRM_TAB_NAME}!A2:M`,
+      range: `${CRM_TAB_NAME}!A1:N`,
     });
-    const rows = data.values ?? [];
+    const header = data.values?.[0] ?? [];
+    const rows = (data.values ?? []).slice(1);
+    if (update.quality && !header[13]) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: config.sheets.spreadsheetId,
+        range: `${CRM_TAB_NAME}!N1`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [["Quality"]] },
+      });
+    }
     const target = normalizePhone(update.phone);
 
     let maxLeadId = 0;
@@ -290,13 +324,14 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
         "Open",
         today,
         "",
-        "Whatsapp",
-        appendRemark("", today, update.remarks),
-        "",
+        update.source ?? "Whatsapp",
+        addNote(appendRemark("", today, update.remarks), update.note),
+        update.address ?? "",
+        update.quality ?? "",
       ];
       await sheets.spreadsheets.values.append({
         spreadsheetId: config.sheets.spreadsheetId,
-        range: `${CRM_TAB_NAME}!A:M`,
+        range: `${CRM_TAB_NAME}!A:N`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [row] },
       });
@@ -315,12 +350,13 @@ export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
         today,
         cell(existing, 9),
         cell(existing, 10) || "Whatsapp",
-        appendRemark(cell(existing, 11), today, update.remarks),
-        cell(existing, 12),
+        addNote(appendRemark(cell(existing, 11), today, update.remarks), update.note),
+        cell(existing, 12) || (update.address ?? ""),
+        mergeQuality(cell(existing, 13), update.quality),
       ];
       await sheets.spreadsheets.values.update({
         spreadsheetId: config.sheets.spreadsheetId,
-        range: `${CRM_TAB_NAME}!A${sheetRow}:M${sheetRow}`,
+        range: `${CRM_TAB_NAME}!A${sheetRow}:N${sheetRow}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [row] },
       });

@@ -1,7 +1,7 @@
 // Quick logic sanity check that needs no real credentials - not a real test suite (no framework),
 // just a fast way to catch an obviously broken classifier or payload parser before real testing.
 import { classifyMessage, feeRedirectReply, needsIntake, intakeAskSuffix, MAX_INTAKE_ATTEMPTS } from "./ai.js";
-import { extractInboundMessages, extractInboundAttachments } from "./whatsapp.js";
+import { extractInboundMessages, extractInboundAttachments, detectLeadSource, isBrochureRequest } from "./whatsapp.js";
 import { matchFaq } from "./faq.js";
 import type { FamilyProfile, FaqEntry } from "./db.js";
 
@@ -115,3 +115,60 @@ assertEqual(attachments[0]?.parentName, "Priya", "attachment keeps the sender's 
 assertEqual(extractInboundAttachments(statusOnlyPayload).length, 0, "status callbacks are not treated as attachments");
 
 console.log("Self-test complete.");
+
+// Lead source for the CRM's Source column (new leads only).
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi Glo! I would like to book a school visit." } }), "Website", "website button pre-fill -> Website");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hello, fees? (website)" } }), "Website", "(website) marker -> Website");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi" }, referral: { source_type: "ad", source_url: "https://fb.me/abc" } }), "Facebook Ads", "click-to-WhatsApp ad referral -> Facebook Ads");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi" }, referral: { source_type: "ad", source_url: "https://www.instagram.com/p/xyz" } }), "Insta Ads", "Instagram ad referral -> Insta Ads");
+assertEqual(detectLeadSource({ type: "text", text: { body: "Hi, admission for my son" } }), undefined, "plain chat -> no source (stays Whatsapp)");
+
+// Brochure on request.
+assertEqual(isBrochureRequest("Can you send me the brochure?"), true, "brochure request");
+assertEqual(isBrochureRequest("Do you have a prospectus or PDF"), true, "prospectus / pdf request");
+assertEqual(isBrochureRequest("What are the timings?"), false, "ordinary question is not a brochure request");
+
+// --- Lead check (A5) and Meta lead forms (A2) ---
+import { scoreLead, parseAgeYears, indianMobile, isJunkName } from "./leadQuality.js";
+import { extractLeadgenEvents, parseMetaLeadFields } from "./metaLeads.js";
+import { mergeQuality } from "./sheets.js";
+
+const nov2026 = new Date(2026, 10, 20);
+assertEqual(indianMobile("+91 98640 12345"), "9864012345", "indianMobile strips +91 and spaces");
+assertEqual(indianMobile("03712 221234"), "", "landline is not a mobile");
+assertEqual(isJunkName("asdf"), true, "junk name asdf");
+assertEqual(isJunkName("Priyanka Das"), false, "real name passes");
+assertEqual(isJunkName("😊"), true, "emoji-only name is junk on a form");
+assertEqual(parseAgeYears("3 years 6 months", nov2026), 3.5, "age: years + months");
+assertEqual(parseAgeYears("18 months", nov2026), 1.5, "age: months");
+assertEqual(parseAgeYears("2022", nov2026), 4, "age: birth year");
+assertEqual(Math.floor(parseAgeYears("15/06/2023", nov2026) ?? 0), 3, "age: date of birth");
+assertEqual(parseAgeYears("not sure", nov2026), null, "age: unreadable");
+assertEqual(scoreLead({ phone: "9999999999", name: "Rahul" }).quality, "Spam", "repeated-digit phone is Spam");
+assertEqual(scoreLead({ phone: "12345", name: "Rahul" }).quality, "Spam", "short phone is Spam");
+assertEqual(scoreLead({ phone: "9864012345", name: "test" }).quality, "Spam", "name 'test' is Spam");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", email: "x@mailinator.com" }).quality, "Spam", "throwaway email is Spam");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", honeypot: "http://spam" }).quality, "Spam", "filled spam trap is Spam");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", childAge: "3" }).quality, "Warm", "valid form lead is Warm");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", childAge: "9 years" }).quality, "Cold", "age 9 is Cold");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", area: "Guwahati 781006" }).quality, "Cold", "PIN outside 784 is Cold");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", area: "Tezpur 784001" }).reasons.includes("local area"), true, "784 PIN counts as local");
+assertEqual(scoreLead({ phone: "919864012345", name: "😊", repliedOnWhatsApp: true }).quality, "Hot", "WhatsApp chat is Hot even with an emoji name");
+assertEqual(scoreLead({ phone: "919864012345", childAge: "10", repliedOnWhatsApp: true }).quality, "Cold", "WhatsApp chat about a 10-year-old is Cold");
+assertEqual(mergeQuality("", "Hot"), "Hot", "blank label takes the new one");
+assertEqual(mergeQuality("Warm", "Hot"), "Hot", "a reply upgrades Warm to Hot");
+assertEqual(mergeQuality("Spam", "Hot"), "Spam", "a label staff set to Spam stays");
+assertEqual(mergeQuality("Cold", "Hot"), "Cold", "a Cold label stays");
+
+const leadgenBody = { object: "page", entry: [{ id: "111", changes: [{ field: "leadgen", value: { leadgen_id: "444", page_id: "111", form_id: "222" } }] }] };
+assertEqual(extractLeadgenEvents(leadgenBody).map((e) => e.leadgenId), ["444"], "extracts leadgen id from a Page webhook");
+assertEqual(extractLeadgenEvents(samplePayload).length, 0, "WhatsApp webhook has no leadgen events");
+const parsedLead = parseMetaLeadFields([
+  { name: "full_name", values: ["Anita Bora"] },
+  { name: "phone_number", values: ["+919864012345"] },
+  { name: "city", values: ["Tezpur"] },
+  { name: "child's_age", values: ["3 years"] },
+  { name: "preferred_visit_day?", values: ["Saturday"] },
+]);
+assertEqual([parsedLead.name, parsedLead.phone, parsedLead.city, parsedLead.childAge], ["Anita Bora", "+919864012345", "Tezpur", "3 years"], "maps Meta lead form answers");
+assertEqual(parsedLead.extras, ["preferred visit day: Saturday"], "keeps other answers as extras");

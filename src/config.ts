@@ -45,7 +45,25 @@ export const config = {
     url: required("DATABASE_URL"),
   },
 
-  escalationPhone: process.env.ESCALATION_PHONE ?? "6001819309",
+  escalationPhone: process.env.ESCALATION_PHONE ?? "9101209309",
+
+  // Public link to GLO's brochure PDF (e.g. on gloschools.com/wp-content/uploads/...). When set,
+  // a parent asking for the brochure/prospectus gets the PDF itself on WhatsApp. Unset = off.
+  brochureUrl: process.env.BROCHURE_URL || undefined,
+
+  // Meta lead-form ads (see src/metaLeads.ts): a Page access token with leads_retrieval. Unset =
+  // leadgen webhooks are ignored.
+  meta: {
+    pageAccessToken: process.env.META_PAGE_ACCESS_TOKEN || undefined,
+  },
+
+  // Approved WhatsApp template sent to a new form lead (Meta lead forms here; website and Google
+  // forms send it from the CRM). Its body must have one {{1}} placeholder for the parent's first
+  // name. Unset = no welcome message.
+  leadWelcome: {
+    template: process.env.LEAD_WELCOME_TEMPLATE || undefined,
+    language: process.env.LEAD_WELCOME_LANG || "en",
+  },
 
   // Shared secret the CRM's "Send WhatsApp" button must present (as an `x-api-key` header) to hit
   // POST /send-template below - that endpoint can push a message to a parent OUTSIDE the normal
