@@ -143,6 +143,24 @@ const FAQ_SEED: Array<{ id: string; keywords: string[]; question: string; answer
       "We're at Bylane 3, Baroholia, Tezpur, Assam. Here's our Google Maps location: https://maps.app.goo.gl/rsHjmAdNVXp3MCqBA",
   },
   {
+    id: "transport",
+    keywords: [
+      "transport",
+      "school bus",
+      "school van",
+      "bus facility",
+      "van facility",
+      "pick and drop",
+      "pickup and drop",
+      "pick-up and drop",
+      "drop facility",
+      "conveyance",
+    ],
+    question: "Do you provide transport?",
+    answer:
+      "We provide school transport only for homes within about 5 km of the school. If you live farther away, parents take care of drop and pick-up. Which area do you live in? Our team will confirm whether transport is available for you.",
+  },
+  {
     id: "visit-tour",
     keywords: ["can we visit", "school tour", "want to visit", "see the campus", "come and see", "which days can we visit", "open sunday", "visit on saturday"],
     question: "Can we visit the school?",

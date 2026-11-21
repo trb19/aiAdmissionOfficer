@@ -23,6 +23,7 @@ import {
 import { matchFaq } from "./faq.js";
 import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime, formatCrmDate } from "./sheets.js";
 import { extractLeadgenEvents, fetchMetaLead } from "./metaLeads.js";
+import { parseWebsiteForm, parseGoogleLead, keyMatches, type FormLead } from "./formLeads.js";
 import { scoreLead, describeLeadCheck, indianMobile } from "./leadQuality.js";
 import {
   getRecentHistory,
@@ -82,6 +83,89 @@ function runSerializedByPhone(phone: string, task: () => Promise<void>): Promise
 app.get("/health", (_req, res) => {
   res.status(200).send("ok");
 });
+
+// Website enquiry forms: Elementor's "Webhook" action posts the form fields (url-encoded) to
+// /form-lead?key=<FORM_WEBHOOK_KEY>. Answered right away so the visitor's form never waits on the
+// sheet; the lead is saved in the background. See src/formLeads.ts.
+app.post("/form-lead", express.urlencoded({ extended: true }), (req, res) => {
+  if (!keyMatches(req.query.key, config.formLeads.websiteKey)) {
+    res.status(401).json({ ok: false, error: "unauthorised" });
+    return;
+  }
+  const lead = parseWebsiteForm((req.body ?? {}) as Record<string, unknown>);
+  res.status(200).json({ ok: true });
+  void saveFormLead(lead).catch((err) => console.error("Error saving website form lead:", err));
+});
+
+// Google Ads lead form assets: Google posts JSON with the key from Google Ads in "google_key".
+app.post("/google-lead", (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!keyMatches(body.google_key, config.formLeads.googleKey)) {
+    res.status(401).json({ ok: false, error: "unauthorised" });
+    return;
+  }
+  const lead = parseGoogleLead(body);
+  res.status(200).json({ ok: true });
+  void saveFormLead(lead).catch((err) => console.error("Error saving Google Ads lead:", err));
+});
+
+/** A website or Google Ads form lead: add or update the CRM lead with its lead check, remember the
+ * names for the bot, and (when LEAD_WELCOME_TEMPLATE is set) greet the parent on WhatsApp. */
+async function saveFormLead(lead: FormLead): Promise<void> {
+  const mobile = indianMobile(lead.phone);
+  const waPhone = mobile ? `91${mobile}` : lead.phone.replace(/\D/g, "");
+  if (!waPhone && !lead.email) {
+    console.warn(`${lead.kind} skipped: no phone or email`);
+    return;
+  }
+  const check = scoreLead({
+    phone: lead.phone,
+    name: lead.parentName,
+    email: lead.email,
+    childAge: lead.childAge,
+    area: lead.area,
+    honeypot: lead.honeypot,
+  });
+  const details = [
+    lead.message,
+    lead.childAge ? `Child's age: ${lead.childAge}` : "",
+    lead.area ? `Area: ${lead.area}` : "",
+    lead.email ? `Email: ${lead.email}` : "",
+  ].filter(Boolean);
+  const note =
+    `[${formatCrmDate(new Date()).replace(/-/g, " ")}] ${lead.kind}${lead.page ? ` (${lead.page})` : ""}` +
+    `${details.length ? ": " + details.join(" · ") : ""} · ${describeLeadCheck(check)}`;
+
+  await runSerializedByPhone(waPhone || lead.email, async () => {
+    if (waPhone && check.quality !== "Spam") {
+      await upsertFamilyProfile(waPhone, {
+        ...(lead.parentName ? { parentName: lead.parentName } : {}),
+        ...(lead.childName ? { childName: lead.childName } : {}),
+        ...(lead.childAge ? { childAge: lead.childAge } : {}),
+      });
+    }
+    await upsertCrmLead({
+      phone: waPhone,
+      parentName: lead.parentName || `${lead.source} enquiry`,
+      childName: lead.childName,
+      childAge: lead.childAge,
+      address: lead.area || undefined,
+      source: lead.source,
+      note,
+      quality: check.quality,
+    });
+
+    if (config.leadWelcome.template && mobile && check.quality !== "Spam" && !lead.isTest) {
+      const firstName = lead.parentName.trim().split(/\s+/)[0] || "there";
+      try {
+        await sendWhatsAppTemplate(waPhone, config.leadWelcome.template, config.leadWelcome.language, [firstName]);
+        await saveMessage(waPhone, "model", `[Welcome template sent: ${config.leadWelcome.template}]`);
+      } catch (err) {
+        console.error("Lead welcome template failed:", err);
+      }
+    }
+  });
+}
 
 // Meta's webhook verification handshake - it hits this with a challenge value that must be echoed
 // back exactly, but only if the verify token matches what's configured in Meta's dashboard.
