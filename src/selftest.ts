@@ -172,3 +172,17 @@ const parsedLead = parseMetaLeadFields([
 ]);
 assertEqual([parsedLead.name, parsedLead.phone, parsedLead.city, parsedLead.childAge], ["Anita Bora", "+919864012345", "Tezpur", "3 years"], "maps Meta lead form answers");
 assertEqual(parsedLead.extras, ["preferred visit day: Saturday"], "keeps other answers as extras");
+
+// --- Website + Google Ads form leads (src/formLeads.ts) ---
+import { parseWebsiteForm, parseGoogleLead, keyMatches } from "./formLeads.js";
+const web = parseWebsiteForm({ Name: "Anita Bora", Mobile: "98640 12345", Email: "anita@example.com", Message: "Child is 3 years", "Leave blank": "", form_name: "Contact Form", "Page URL": "https://gloschools.com/programs/" });
+assertEqual([web.parentName, web.phone, web.email, web.message, web.honeypot, web.source, web.page], ["Anita Bora", "98640 12345", "anita@example.com", "Child is 3 years", "", "Website", "Contact Form"], "parses an Elementor website form");
+assertEqual(parseWebsiteForm({ Name: "Bot", Mobile: "9864012345", "Leave blank": "http://spam.example" }).honeypot, "http://spam.example", "reads the honeypot field");
+assertEqual(parseWebsiteForm({ "Your details": "Ravi", Field: "+91 98640 12345" }).phone, "+91 98640 12345", "finds a phone in an oddly labelled field");
+const g = parseGoogleLead({ google_key: "k", is_test: true, campaign_id: 123, user_column_data: [
+  { column_id: "FULL_NAME", string_value: "Ravi Das" }, { column_id: "PHONE_NUMBER", string_value: "+919864012345" },
+  { column_id: "QUESTION_1", column_name: "Child's age?", string_value: "2 years" },
+  { column_id: "QUESTION_2", column_name: "Which program?", string_value: "Playgroup" } ] });
+assertEqual([g.parentName, g.phone, g.childAge, g.message, g.isTest, g.source], ["Ravi Das", "+919864012345", "2 years", "Which program?: Playgroup", true, "Google Ads"], "parses a Google Ads lead form");
+assertEqual(g.kind.includes("TEST"), true, "Google test leads are labelled");
+assertEqual([keyMatches("abc", "abc"), keyMatches("abd", "abc"), keyMatches("abc", undefined), keyMatches(undefined, "abc")], [true, false, false, false], "key check");

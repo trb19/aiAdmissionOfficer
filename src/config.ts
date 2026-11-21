@@ -57,6 +57,14 @@ export const config = {
     pageAccessToken: process.env.META_PAGE_ACCESS_TOKEN || undefined,
   },
 
+  // Website enquiry forms (POST /form-lead?key=...) and Google Ads lead forms (POST /google-lead,
+  // key sent as "google_key") - see src/formLeads.ts. Same values as the CRM's Script Properties.
+  // Unset = that route answers 401.
+  formLeads: {
+    websiteKey: process.env.FORM_WEBHOOK_KEY || undefined,
+    googleKey: process.env.GOOGLE_LEAD_KEY || undefined,
+  },
+
   // Approved WhatsApp template sent to a new form lead (Meta lead forms here; website and Google
   // forms send it from the CRM). Its body must have one {{1}} placeholder for the parent's first
   // name. Unset = no welcome message.

@@ -1232,6 +1232,25 @@ function createCallbackAlertTrigger() {
   Logger.log("Call-back alerts on: checked every 15 minutes, emailed to " + digestRecipients_() + ".");
 }
 
+// ── KEEP THE BOT AWAKE ───────────────────────────────────────
+// The bot runs on Render's free plan, which sleeps after ~15 minutes without traffic and then takes
+// up to a minute to wake. Website forms send leads to the bot and give up after ~5 seconds, so a
+// sleeping bot would make a parent's form "fail". This pings the bot's /health every 10 minutes.
+// Turn it on once: run createKeepBotAwakeTrigger from the Script Editor (safe to re-run).
+function keepBotAwake() {
+  const backendUrl = PropertiesService.getScriptProperties().getProperty("CRM_BACKEND_URL") || "https://aiadmissionofficer.onrender.com";
+  UrlFetchApp.fetch(backendUrl + "/health", { muteHttpExceptions: true });
+}
+
+function createKeepBotAwakeTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "keepBotAwake") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("keepBotAwake").timeBased().everyMinutes(10).create();
+  keepBotAwake();
+  Logger.log("Keep-awake on: the bot is pinged every 10 minutes.");
+}
+
 // ── FORM LEADS → CRM (website form + Google Ads lead forms) ──
 // Two senders post to this web app's URL:
 //  - Elementor's form "Webhook" action:  <web app URL>?key=<FORM_WEBHOOK_KEY>  (form fields)
