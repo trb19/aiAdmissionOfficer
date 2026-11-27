@@ -26,6 +26,7 @@ import { extractLeadgenEvents, fetchMetaLead } from "./metaLeads.js";
 import { parseWebsiteForm, parseGoogleLead, keyMatches, type FormLead } from "./formLeads.js";
 import { scoreLead, describeLeadCheck, indianMobile } from "./leadQuality.js";
 import { sendOfficeDigest, startDigestTimer } from "./officeDigest.js";
+import { startFeeEmailTimer, feeRound } from "./feeEmails.js";
 import {
   getRecentHistory,
   getFullConversation,
@@ -502,6 +503,13 @@ app.post("/api/digest/run", async (req, res) => {
   }
 });
 
+// GLO Progress calls this (database trigger) right after a fee payment is recorded, so a sleeping bot wakes up and
+// emails the receipt. It only starts a round that reads what is in the database, so it needs no key.
+app.post("/api/fees/poke", (_req, res) => {
+  res.status(202).json({ ok: true });
+  setTimeout(() => void feeRound(), 2_000);
+});
+
 // Every CRM endpoint can read a parent's chats or message them, so all of them REFUSE to work until
 // CRM_SEND_SECRET is set (they used to fall open with a console warning, which let anyone who knew
 // the Render URL and a parent's number read that family's chat). The CRM sends the same value as
@@ -629,4 +637,5 @@ app.get("/inbox", (_req, res) => {
 app.listen(config.port, () => {
   console.log(`GLO admissions bot listening on port ${config.port}`);
   startDigestTimer();
+  startFeeEmailTimer();
 });
