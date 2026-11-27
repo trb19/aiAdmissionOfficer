@@ -3,6 +3,9 @@
 // in step if either changes.
 //
 //   Spam  junk or invalid phone, junk name, throwaway email, spam-trap field filled, no contact.
+//         Also a sales pitch or bot text: a link, SEO/marketing/crypto words, or a script no Tezpur
+//         parent would use (Cyrillic, Chinese...). Those "bot" signals set drop = true, and the
+//         form routes don't add the lead to the CRM at all.
 //         Skipped for a parent who messaged on WhatsApp: WhatsApp has already proved the number.
 //   Cold  child's age outside 1 to 6.5 years, or a PIN code outside the 784xxx (Sonitpur) area.
 //   Hot   the parent has written to us on WhatsApp (the strongest sign of a real lead).
@@ -19,12 +22,16 @@ export interface LeadCheckInput {
   area?: string;
   /** Value of a hidden spam-trap field; real people never fill it. */
   honeypot?: string;
+  /** Free-text message from the form, checked for links and sales pitches. */
+  message?: string;
   repliedOnWhatsApp?: boolean;
 }
 
 export interface LeadCheck {
   quality: LeadQuality;
   reasons: string[];
+  /** Spam that is certainly a bot or a sales pitch: don't add it to the CRM. */
+  drop?: boolean;
 }
 
 /** Last 10 digits if they form a valid Indian mobile number (starts 6-9), else "". */
@@ -77,6 +84,39 @@ export function parseAgeYears(text: string | undefined, now: Date = new Date()):
   return null;
 }
 
+const EMAIL_ADDRESS = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
+const LINK = /https?:\/\/|www\.|\b[a-z0-9-]+\.(com|net|org|ru|xyz|info|io|biz|online|site|top|shop|store|click)\b(\/|\s|$)/i;
+
+// Words a parent asking about preschool never uses, but sales pitches and spam bots always do.
+const PITCH_WORDS = new RegExp(
+  "\\b(" + [
+    "seo", "backlinks?", "search engine", "first page of google", "google (ranking|first page)", "rank(ing)? (your|on|higher)",
+    "web ?design", "web ?development", "website (design|development|redesign|traffic|audit)", "app development",
+    "digital marketing", "marketing (services|agency|team)", "social media marketing", "lead generation", "more (leads|traffic|customers)",
+    "guest posts?", "sponsored post", "domain authority", "crypto(currency)?", "bitcoin", "forex", "nft", "casino", "betting",
+    "business loan", "investment opportunity", "viagra", "cialis", "porn", "dating", "escort", "unsubscribe", "opt.?out",
+    "dear (business|website) owner", "outsourc(e|ing)", "virtual assistant",
+  ].join("|") + ")\\b",
+  "i",
+);
+
+/** Letters in a script other than Latin, Devanagari (Hindi) or Bengali-Assamese. */
+const FOREIGN_SCRIPT = /[^\P{L}\p{Script=Latin}\p{Script=Devanagari}\p{Script=Bengali}]/u;
+
+/** Signs that a form was filled by a bot or a salesperson, not a parent. */
+export function botSignals(input: LeadCheckInput): string[] {
+  const out: string[] = [];
+  const name = String(input.name ?? "");
+  const message = String(input.message ?? "");
+  const text = `${name} ${message}`.replace(EMAIL_ADDRESS, " ");
+  if (input.honeypot && input.honeypot.trim()) out.push("spam-trap field was filled (a bot)");
+  if (LINK.test(text)) out.push("has a web link");
+  const pitch = text.match(PITCH_WORDS);
+  if (pitch) out.push(`sales pitch ("${pitch[0]}")`);
+  if (FOREIGN_SCRIPT.test(text)) out.push("written in a foreign script");
+  return out;
+}
+
 const MIN_AGE = 1; // Daycare takes children from 1 year
 const MAX_AGE = 6.5; // Sr. KG is the last class
 
@@ -97,7 +137,8 @@ export function scoreLead(input: LeadCheckInput): LeadCheck {
     if (!input.phone && !input.email) spam.push("no phone or email");
     if (isJunkName(input.name)) spam.push(`name looks fake ("${String(input.name).trim()}")`);
     if (input.email && THROWAWAY_EMAIL.test(input.email)) spam.push("throwaway email address");
-    if (input.honeypot && input.honeypot.trim()) spam.push("spam-trap field was filled (a bot)");
+    const bot = botSignals(input);
+    if (bot.length) return { quality: "Spam", reasons: [...bot, ...spam], drop: true };
   }
   if (spam.length) return { quality: "Spam", reasons: spam };
 
