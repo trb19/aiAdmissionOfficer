@@ -484,7 +484,7 @@ app.post("/send-template", express.json(), async (req, res) => {
   }
 });
 
-// Morning enquiry digest for the office (see src/officeDigest.ts). Called by a Supabase pg_cron
+// Morning enquiry digest email for the office (see src/officeDigest.ts). Called by a Supabase pg_cron
 // job at 9 AM IST; ?dry=1 only returns the counts.
 app.post("/api/digest/run", async (req, res) => {
   if (!checkCrmSecret(req, res)) return;

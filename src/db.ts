@@ -353,13 +353,19 @@ export async function flagNeedsCall(phone: string, reason: string): Promise<void
   );
 }
 
-/** How many parents are still waiting for a staff call-back (flag set, not yet answered by staff). */
-export async function countPendingCallBacks(): Promise<number> {
+/** Parents still waiting for a staff call-back (flag set, not yet answered by staff), oldest first. */
+export async function listPendingCallBacks(): Promise<{ phone: string; name: string; reason: string; since: Date }[]> {
   await ensureSchema();
-  const { rows } = await getPool().query<{ n: string }>(
-    `SELECT count(*)::text AS n FROM family_profiles WHERE needs_call_at IS NOT NULL`
+  const { rows } = await getPool().query<{ phone: string; parent_name: string | null; child_name: string | null; needs_call_reason: string | null; needs_call_at: Date }>(
+    `SELECT phone, parent_name, child_name, needs_call_reason, needs_call_at
+       FROM family_profiles WHERE needs_call_at IS NOT NULL ORDER BY needs_call_at`
   );
-  return Number(rows[0]?.n ?? 0);
+  return rows.map((r) => ({
+    phone: r.phone,
+    name: [r.parent_name, r.child_name && `(${r.child_name})`].filter(Boolean).join(" ") || "Parent",
+    reason: r.needs_call_reason ?? "",
+    since: r.needs_call_at,
+  }));
 }
 
 export async function getStoredSummary(phone: string): Promise<string | null> {
