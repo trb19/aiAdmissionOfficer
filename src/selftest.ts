@@ -155,6 +155,18 @@ assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", area: "Guwahati 7810
 assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", area: "Tezpur 784001" }).reasons.includes("local area"), true, "784 PIN counts as local");
 assertEqual(scoreLead({ phone: "919864012345", name: "😊", repliedOnWhatsApp: true }).quality, "Hot", "WhatsApp chat is Hot even with an emoji name");
 assertEqual(scoreLead({ phone: "919864012345", childAge: "10", repliedOnWhatsApp: true }).quality, "Cold", "WhatsApp chat about a 10-year-old is Cold");
+// Bot and sales-pitch form spam is dropped (not added to the CRM); real parents never are.
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", honeypot: "x" }).drop, true, "filled spam trap is dropped");
+assertEqual(scoreLead({ phone: "9864012345", name: "Mike", message: "Want to rank your website on Google first page? Our SEO team can help" }).drop, true, "SEO pitch is dropped");
+assertEqual(scoreLead({ phone: "+1 415 555 0100", name: "Anna", message: "Check https://cheap-deals.example" }).drop, true, "message with a link is dropped");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", message: "visit bestloans.xyz now" }).drop, true, "bare domain is dropped");
+assertEqual(scoreLead({ phone: "9864012345", name: "Ольга", message: "Привет" }).drop, true, "Cyrillic text is dropped");
+assertEqual(scoreLead({ phone: "9864012345", name: "Ravi", message: "Earn with bitcoin daily" }).drop, true, "crypto pitch is dropped");
+assertEqual(scoreLead({ phone: "9864012345", name: "Anita Bora", message: "Dear Sir, I saw your website. My son is 3, is admission open? Mail me at anita.bora@gmail.com" }).quality, "Warm", "parent message with an email and 'your website' stays Warm");
+assertEqual(scoreLead({ phone: "9864012345", name: "অনিতা বৰা", message: "মোৰ ল'ৰাৰ বয়স ৩ বছৰ" }).quality, "Warm", "Assamese text is fine");
+assertEqual(scoreLead({ phone: "9864012345", name: "अनीता", message: "बच्चे की उम्र 3 साल" }).quality, "Warm", "Hindi text is fine");
+assertEqual(scoreLead({ phone: "9864012345", name: "Rahul", message: "Child is 3 yrs.Is daycare available?" }).quality, "Warm", "a missing space after a full stop isn't a link");
+assertEqual(scoreLead({ phone: "9999999999", name: "Rahul" }).drop, undefined, "a made-up phone is Spam but still kept");
 assertEqual(mergeQuality("", "Hot"), "Hot", "blank label takes the new one");
 assertEqual(mergeQuality("Warm", "Hot"), "Hot", "a reply upgrades Warm to Hot");
 assertEqual(mergeQuality("Spam", "Hot"), "Spam", "a label staff set to Spam stays");

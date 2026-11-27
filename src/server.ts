@@ -126,7 +126,13 @@ async function saveFormLead(lead: FormLead): Promise<void> {
     childAge: lead.childAge,
     area: lead.area,
     honeypot: lead.honeypot,
+    message: lead.message,
   });
+  if (check.drop) {
+    // A bot or a sales pitch: keep it out of the CRM, but leave a trace in the Render log.
+    console.warn(`${lead.kind} dropped as spam (${check.reasons.join(", ")}): ${waPhone || lead.email}`);
+    return;
+  }
   const details = [
     lead.message,
     lead.childAge ? `Child's age: ${lead.childAge}` : "",

@@ -1368,7 +1368,13 @@ function saveFormLead_(f) {
     childAge: f.childAge,
     area: f.area,
     honeypot: f.honeypot,
+    message: f.message,
   });
+  // A bot or a sales pitch: answer OK so the form doesn't retry, but keep it out of the sheet.
+  if (check.drop) {
+    console.warn(f.kind + " dropped as spam (" + check.reasons.join(", ") + "): " + (phone || f.email));
+    return { ok: true, dropped: true };
+  }
   const note = "[" + fmtLog(new Date()) + "] " + f.kind + (f.page ? " (" + f.page + ")" : "") + ": " +
     [f.message, f.childAge ? "Child's age: " + f.childAge : "", f.area ? "Area: " + f.area : "", f.email ? "Email: " + f.email : ""]
       .filter(String).join(" · ") +
@@ -1468,6 +1474,30 @@ const LEAD_JUNK_NAMES = /^(test|testing|tester|asdf\w*|qwerty|abc|abcd|xyz|na|n\
 const LEAD_THROWAWAY_EMAIL = /@(mailinator|guerrillamail|sharklasers|10minutemail|tempmail|temp-mail|yopmail|trashmail|getnada|dispostable|maildrop|fakeinbox|throwawaymail)\./i;
 const LEAD_LOCAL_AREA = /tezpur|sonitpur|dhekiajuli|balipara|rangapara|misamari|biswanath|jamugurihat|bihaguri/i;
 
+// Bot / sales-pitch signals: same rules as botSignals in src/leadQuality.ts. Any of them = drop.
+const LEAD_EMAIL_ADDRESS = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
+const LEAD_LINK = /https?:\/\/|www\.|\b[a-z0-9-]+\.(com|net|org|ru|xyz|info|io|biz|online|site|top|shop|store|click)\b(\/|\s|$)/i;
+const LEAD_PITCH_WORDS = new RegExp("\\b(" + [
+  "seo", "backlinks?", "search engine", "first page of google", "google (ranking|first page)", "rank(ing)? (your|on|higher)",
+  "web ?design", "web ?development", "website (design|development|redesign|traffic|audit)", "app development",
+  "digital marketing", "marketing (services|agency|team)", "social media marketing", "lead generation", "more (leads|traffic|customers)",
+  "guest posts?", "sponsored post", "domain authority", "crypto(currency)?", "bitcoin", "forex", "nft", "casino", "betting",
+  "business loan", "investment opportunity", "viagra", "cialis", "porn", "dating", "escort", "unsubscribe", "opt.?out",
+  "dear (business|website) owner", "outsourc(e|ing)", "virtual assistant",
+].join("|") + ")\\b", "i");
+const LEAD_FOREIGN_SCRIPT = /[^\P{L}\p{Script=Latin}\p{Script=Devanagari}\p{Script=Bengali}]/u;
+
+function botSignals_(f) {
+  const out = [];
+  const text = (String(f.name || "") + " " + String(f.message || "")).replace(LEAD_EMAIL_ADDRESS, " ");
+  if (f.honeypot && String(f.honeypot).trim()) out.push("spam-trap field was filled (a bot)");
+  if (LEAD_LINK.test(text)) out.push("has a web link");
+  const pitch = text.match(LEAD_PITCH_WORDS);
+  if (pitch) out.push('sales pitch ("' + pitch[0] + '")');
+  if (LEAD_FOREIGN_SCRIPT.test(text)) out.push("written in a foreign script");
+  return out;
+}
+
 function isJunkName_(name) {
   const n = String(name || "").trim();
   if (!n) return false;
@@ -1509,7 +1539,8 @@ function scoreLead_(f) {
     if (!f.phone && !f.email) spam.push("no phone or email");
     if (isJunkName_(f.name)) spam.push('name looks fake ("' + String(f.name).trim() + '")');
     if (f.email && LEAD_THROWAWAY_EMAIL.test(f.email)) spam.push("throwaway email address");
-    if (f.honeypot && String(f.honeypot).trim()) spam.push("spam-trap field was filled (a bot)");
+    const bot = botSignals_(f);
+    if (bot.length) return { quality: "Spam", reasons: bot.concat(spam), drop: true };
   }
   if (spam.length) return { quality: "Spam", reasons: spam };
 
@@ -1540,6 +1571,11 @@ function testLeadCheck() {
     [{ phone: "9864012345", name: "Rahul", childAge: "9 years" }, "Cold"],
     [{ phone: "9864012345", name: "Rahul", area: "Guwahati 781006" }, "Cold"],
     [{ phone: "+91 98640 12345", name: "Anita Bora", area: "Tezpur 784001", childAge: "18 months" }, "Warm"],
+    [{ phone: "9864012345", name: "Mike", message: "We can rank your website on Google with SEO" }, "Spam"],
+    [{ phone: "9864012345", name: "Ravi", message: "visit bestloans.xyz now" }, "Spam"],
+    [{ phone: "9864012345", name: "Ольга", message: "Привет" }, "Spam"],
+    [{ phone: "9864012345", name: "Anita Bora", message: "Dear Sir, saw your website. Is admission open? anita.bora@gmail.com" }, "Warm"],
+    [{ phone: "9864012345", name: "অনিতা বৰা", message: "মোৰ ল'ৰাৰ বয়স ৩ বছৰ" }, "Warm"],
   ];
   let pass = 0;
   cases.forEach(function (c) {
