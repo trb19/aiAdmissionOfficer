@@ -353,6 +353,34 @@ export async function flagNeedsCall(phone: string, reason: string): Promise<void
   );
 }
 
+/** Parents still waiting for a staff call-back (flag set, not yet answered by staff), oldest first. */
+export async function listPendingCallBacks(): Promise<{ phone: string; name: string; reason: string; since: Date }[]> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ phone: string; parent_name: string | null; child_name: string | null; needs_call_reason: string | null; needs_call_at: Date }>(
+    `SELECT phone, parent_name, child_name, needs_call_reason, needs_call_at
+       FROM family_profiles WHERE needs_call_at IS NOT NULL ORDER BY needs_call_at`
+  );
+  return rows.map((r) => ({
+    phone: r.phone,
+    name: [r.parent_name, r.child_name && `(${r.child_name})`].filter(Boolean).join(" ") || "Parent",
+    reason: r.needs_call_reason ?? "",
+    since: r.needs_call_at,
+  }));
+}
+
+/** Claims today's office digest so it is sent once a day even across restarts. True = ours to send. */
+export async function claimDigestDay(day: string): Promise<boolean> {
+  await ensureSchema();
+  await getPool().query(`CREATE TABLE IF NOT EXISTS office_digest_log (day DATE PRIMARY KEY, sent_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+  const { rowCount } = await getPool().query(`INSERT INTO office_digest_log (day) VALUES ($1) ON CONFLICT DO NOTHING`, [day]);
+  return rowCount === 1;
+}
+
+/** Gives back a claimed day after a failed send, so the next check tries again. */
+export async function releaseDigestDay(day: string): Promise<void> {
+  await getPool().query(`DELETE FROM office_digest_log WHERE day = $1`, [day]);
+}
+
 export async function getStoredSummary(phone: string): Promise<string | null> {
   await ensureSchema();
   const { rows } = await getPool().query<{ summary: string }>(
