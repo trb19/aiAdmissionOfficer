@@ -368,6 +368,19 @@ export async function listPendingCallBacks(): Promise<{ phone: string; name: str
   }));
 }
 
+/** Claims today's office digest so it is sent once a day even across restarts. True = ours to send. */
+export async function claimDigestDay(day: string): Promise<boolean> {
+  await ensureSchema();
+  await getPool().query(`CREATE TABLE IF NOT EXISTS office_digest_log (day DATE PRIMARY KEY, sent_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+  const { rowCount } = await getPool().query(`INSERT INTO office_digest_log (day) VALUES ($1) ON CONFLICT DO NOTHING`, [day]);
+  return rowCount === 1;
+}
+
+/** Gives back a claimed day after a failed send, so the next check tries again. */
+export async function releaseDigestDay(day: string): Promise<void> {
+  await getPool().query(`DELETE FROM office_digest_log WHERE day = $1`, [day]);
+}
+
 export async function getStoredSummary(phone: string): Promise<string | null> {
   await ensureSchema();
   const { rows } = await getPool().query<{ summary: string }>(

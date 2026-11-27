@@ -25,7 +25,7 @@ import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime
 import { extractLeadgenEvents, fetchMetaLead } from "./metaLeads.js";
 import { parseWebsiteForm, parseGoogleLead, keyMatches, type FormLead } from "./formLeads.js";
 import { scoreLead, describeLeadCheck, indianMobile } from "./leadQuality.js";
-import { sendOfficeDigest } from "./officeDigest.js";
+import { sendOfficeDigest, startDigestTimer } from "./officeDigest.js";
 import {
   getRecentHistory,
   getFullConversation,
@@ -484,8 +484,8 @@ app.post("/send-template", express.json(), async (req, res) => {
   }
 });
 
-// Morning enquiry digest email for the office (see src/officeDigest.ts). Called by a Supabase pg_cron
-// job at 9 AM IST; ?dry=1 only returns the counts.
+// Morning enquiry digest email for the office (see src/officeDigest.ts): sends it now; ?dry=1 only
+// returns the lists. The daily send is automatic (startDigestTimer).
 app.post("/api/digest/run", async (req, res) => {
   if (!checkCrmSecret(req, res)) return;
   try {
@@ -622,4 +622,5 @@ app.get("/inbox", (_req, res) => {
 
 app.listen(config.port, () => {
   console.log(`GLO admissions bot listening on port ${config.port}`);
+  startDigestTimer();
 });

@@ -11,11 +11,13 @@
  *   APP_URL               link in the email (default https://app.gloschools.com)
  * Uses PROGRESS_SUPABASE_URL / PROGRESS_SERVICE_KEY like progressLeads.ts.
  *
- * Triggered by POST /api/digest/run (x-api-key = CRM_SEND_SECRET), which a Supabase pg_cron job
- * calls at 9 AM IST. ?dry=1 returns the lists without sending anything.
+ * Sent automatically: startDigestTimer() checks every 5 minutes and sends once a day between
+ * 9 AM and noon IST (the day is recorded in office_digest_log, so restarts don't resend). Render's
+ * free plan sleeps, so a Supabase pg_cron job opens /health at 9 AM IST to wake the bot.
+ * POST /api/digest/run (x-api-key = CRM_SEND_SECRET) sends on demand; ?dry=1 only returns the lists.
  */
 import nodemailer from "nodemailer";
-import { listPendingCallBacks } from "./db.js";
+import { listPendingCallBacks, claimDigestDay, releaseDigestDay } from "./db.js";
 
 const ACTIVE = ["Open", "Waiting", "Probable", "Less Likely"];
 const MAX_ROWS = 40;
@@ -119,4 +121,30 @@ export async function sendOfficeDigest(dry = false): Promise<{ digest: Digest; s
   const { subject, html, text } = renderDigest(digest);
   await mail.sendMail({ from: process.env.SMTP_FROM ?? process.env.SMTP_USER, to, subject, html, text });
   return { digest, sentTo: to };
+}
+
+/** Once a day, between 9 AM and noon India time, send the digest (if recipients are configured). */
+export function startDigestTimer(): void {
+  if (!process.env.OFFICE_DIGEST_EMAILS) return;
+  const tick = async () => {
+    const ist = new Date(Date.now() + 330 * 60_000);
+    const hour = ist.getUTCHours();
+    if (hour < 9 || hour >= 12) return;
+    const day = ist.toISOString().slice(0, 10);
+    try {
+      if (!(await claimDigestDay(day))) return;
+    } catch (err) {
+      console.error("Office digest: could not check today's log:", err);
+      return;
+    }
+    try {
+      const r = await sendOfficeDigest();
+      console.log(`Office digest sent to ${r.sentTo.join(", ")}`);
+    } catch (err) {
+      console.error("Office digest failed, will retry:", err);
+      await releaseDigestDay(day).catch(() => {});
+    }
+  };
+  setTimeout(tick, 20_000);
+  setInterval(tick, 5 * 60_000);
 }
