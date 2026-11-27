@@ -25,6 +25,7 @@ import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime
 import { extractLeadgenEvents, fetchMetaLead } from "./metaLeads.js";
 import { parseWebsiteForm, parseGoogleLead, keyMatches, type FormLead } from "./formLeads.js";
 import { scoreLead, describeLeadCheck, indianMobile } from "./leadQuality.js";
+import { sendOfficeDigest } from "./officeDigest.js";
 import {
   getRecentHistory,
   getFullConversation,
@@ -479,6 +480,18 @@ app.post("/send-template", express.json(), async (req, res) => {
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error("Error sending WhatsApp template:", err);
+    res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
+  }
+});
+
+// Morning enquiry digest for the office (see src/officeDigest.ts). Called by a Supabase pg_cron
+// job at 9 AM IST; ?dry=1 only returns the counts.
+app.post("/api/digest/run", async (req, res) => {
+  if (!checkCrmSecret(req, res)) return;
+  try {
+    res.status(200).json(await sendOfficeDigest(req.query.dry === "1"));
+  } catch (err) {
+    console.error("Office digest failed:", err);
     res.status(502).json({ error: err instanceof Error ? err.message : "Unknown error" });
   }
 });

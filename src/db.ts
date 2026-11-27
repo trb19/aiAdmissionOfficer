@@ -353,6 +353,15 @@ export async function flagNeedsCall(phone: string, reason: string): Promise<void
   );
 }
 
+/** How many parents are still waiting for a staff call-back (flag set, not yet answered by staff). */
+export async function countPendingCallBacks(): Promise<number> {
+  await ensureSchema();
+  const { rows } = await getPool().query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM family_profiles WHERE needs_call_at IS NOT NULL`
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 export async function getStoredSummary(phone: string): Promise<string | null> {
   await ensureSchema();
   const { rows } = await getPool().query<{ summary: string }>(
