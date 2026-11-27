@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { config } from "./config.js";
 import type { LeadQuality } from "./leadQuality.js";
+import { saveLeadToProgress } from "./progressLeads.js";
 
 let sheetsClientPromise: ReturnType<typeof buildClient> | null = null;
 
@@ -279,6 +280,9 @@ export function mergeQuality(existing: string, incoming: LeadQuality | undefined
  * arriving in the same instant could in theory grab the same ID - an acceptable risk at Phase 0's
  * traffic, not something worth a locking scheme yet. */
 export async function upsertCrmLead(update: CrmLeadUpdate): Promise<void> {
+  // GLO Progress (Supabase) Enquiries: same lead, saved in the app too. Does nothing until
+  // PROGRESS_SUPABASE_URL and PROGRESS_SERVICE_KEY are set on Render; never throws.
+  void saveLeadToProgress(update);
   try {
     const sheets = await getSheetsClient();
     await ensureTab(sheets, CRM_TAB_NAME, CRM_HEADER);
