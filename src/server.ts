@@ -19,6 +19,7 @@ import {
   extractChildInfo,
   needsIntake,
   intakeAskSuffix,
+  fixGrammar,
 } from "./ai.js";
 import { matchFaq } from "./faq.js";
 import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime, formatCrmDate } from "./sheets.js";
@@ -520,6 +521,23 @@ function checkCrmSecret(req: express.Request, res: express.Response): boolean {
 
 // The CRM's chat-viewer popup hits this to load the full WhatsApp transcript for a lead, plus
 // whether the bot is currently paused for them (see POST /send-message below).
+// "Fix grammar" for teachers in GLO Progress. Called only by the Supabase bot-proxy function, which
+// checks the caller is signed-in staff; same CRM_SEND_SECRET lock as the other app endpoints.
+app.post("/api/grammar", express.json(), async (req, res) => {
+  if (!checkCrmSecret(req, res)) return;
+  const text = String((req.body as { text?: string })?.text ?? "");
+  if (!text.trim() || text.length > 4000) {
+    res.status(400).json({ error: "Write some text first (up to 4000 letters)." });
+    return;
+  }
+  try {
+    res.status(200).json({ text: await fixGrammar(text) });
+  } catch (err) {
+    console.error("Grammar fix failed:", err);
+    res.status(502).json({ error: "Could not check the text right now. Please try again." });
+  }
+});
+
 app.get("/conversation", async (req, res) => {
   if (!checkCrmSecret(req, res)) return;
 

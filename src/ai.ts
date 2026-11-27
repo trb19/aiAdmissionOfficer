@@ -273,3 +273,21 @@ export async function summarizeConversation(history: StoredMessage[]): Promise<s
 
   return text || "No summary available.";
 }
+
+const GRAMMAR_PROMPT = `
+You correct short notes written by preschool teachers in India (posts to parents, observations,
+replies). Fix spelling, grammar and punctuation only. Keep the teacher's meaning, tone, names,
+emojis and line breaks. Do not add new facts, greetings or sign-offs, and do not make it longer
+than needed. Keep Indian English usage (e.g. "ma'am", "tiffin"). If the text is not English or is
+already correct, return it unchanged. Reply with the corrected text only, nothing else.
+
+Text:
+`.trim();
+
+/** "Fix grammar" button in GLO Progress (via the Supabase bot-proxy function). */
+export async function fixGrammar(text: string): Promise<string> {
+  const model = genAI.getGenerativeModel({ model: config.gemini.model });
+  const result = await throttledGeminiCall(() => model.generateContent(`${GRAMMAR_PROMPT}\n${text}`));
+  const out = result.response.text().trim();
+  return out || text;
+}
