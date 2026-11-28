@@ -273,3 +273,40 @@ export async function summarizeConversation(history: StoredMessage[]): Promise<s
 
   return text || "No summary available.";
 }
+
+const GRAMMAR_PROMPT = `
+You correct short notes written by preschool teachers in India (posts to parents, observations,
+replies). Fix spelling, grammar and punctuation only. Keep the teacher's meaning, tone, names,
+emojis and line breaks. Do not add new facts, greetings or sign-offs, and do not make it longer
+than needed. Keep Indian English usage (e.g. "ma'am", "tiffin"). If the text is not English or is
+already correct, return it unchanged. Reply with the corrected text only, nothing else.
+
+Text:
+`.trim();
+
+/** "Fix grammar" button in GLO Progress (via the Supabase bot-proxy function). */
+export async function fixGrammar(text: string): Promise<string> {
+  const model = genAI.getGenerativeModel({ model: config.gemini.model });
+  const result = await throttledGeminiCall(() => model.generateContent(`${GRAMMAR_PROMPT}\n${text}`));
+  const out = result.response.text().trim();
+  return out || text;
+}
+
+const TOPIC_QUESTIONS_PROMPT = `
+You help the principal of an Indian preschool (Playgroup to Senior KG, ages 2 to 6) observe a class.
+For the topic below, write 4 short questions the observer answers by watching the lesson, each rated
+1 (needs support) to 4 (excellent). Each question must be specific to THIS topic: what the teacher
+should show, do or ask, and what children should be able to do by the end. Mention the topic's own
+materials, words, sounds, numbers or actions. Avoid generic questions that fit any lesson.
+Keep each question under 20 words, in simple English. Reply with a JSON array of 4 strings only.
+`.trim();
+
+/** Topic-wise observation questions for GLO Progress (approved by the coordinator before regular use). */
+export async function topicQuestions(t: { cls: string; subject: string; title: string; note?: string }): Promise<string[]> {
+  const model = genAI.getGenerativeModel({ model: config.gemini.model, generationConfig: { responseMimeType: "application/json" } });
+  const topic = `Class: ${t.cls}\nSubject: ${t.subject}\nTopic: ${t.title}${t.note ? `\nLesson note: ${t.note}` : ""}`;
+  const result = await throttledGeminiCall(() => model.generateContent(`${TOPIC_QUESTIONS_PROMPT}\n\n${topic}`));
+  let out: unknown;
+  try { out = JSON.parse(result.response.text()); } catch { out = []; }
+  return (Array.isArray(out) ? out : []).map((q) => String(q).trim()).filter(Boolean).slice(0, 6);
+}
