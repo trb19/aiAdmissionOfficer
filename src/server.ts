@@ -19,7 +19,7 @@ import {
   extractChildInfo,
   needsIntake,
   intakeAskSuffix,
-  fixGrammar,
+  fixGrammar, topicQuestions,
 } from "./ai.js";
 import { matchFaq } from "./faq.js";
 import { logEnquiry, upsertConversationSummary, upsertCrmLead, formatIstDateTime, formatCrmDate } from "./sheets.js";
@@ -523,6 +523,24 @@ function checkCrmSecret(req: express.Request, res: express.Response): boolean {
 // whether the bot is currently paused for them (see POST /send-message below).
 // "Fix grammar" for teachers in GLO Progress. Called only by the Supabase bot-proxy function, which
 // checks the caller is signed-in staff; same CRM_SEND_SECRET lock as the other app endpoints.
+app.post("/api/topic-questions", express.json(), async (req, res) => {
+  if (!checkCrmSecret(req, res)) return;
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const t = { cls: String(b.cls ?? "").slice(0, 60), subject: String(b.subject ?? "").slice(0, 60), title: String(b.title ?? "").slice(0, 200), note: String(b.note ?? "").slice(0, 600) };
+  if (!t.title.trim()) {
+    res.status(400).json({ error: "Pick a topic first." });
+    return;
+  }
+  try {
+    const questions = await topicQuestions(t);
+    if (!questions.length) throw new Error("empty");
+    res.status(200).json({ questions });
+  } catch (err) {
+    console.error("Topic questions failed:", err);
+    res.status(502).json({ error: "Could not write questions right now. Please try again or write them yourself." });
+  }
+});
+
 app.post("/api/grammar", express.json(), async (req, res) => {
   if (!checkCrmSecret(req, res)) return;
   const text = String((req.body as { text?: string })?.text ?? "");
