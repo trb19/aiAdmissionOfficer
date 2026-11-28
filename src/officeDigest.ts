@@ -16,7 +16,7 @@
  * free plan sleeps, so a Supabase pg_cron job opens /health at 9 AM IST to wake the bot.
  * POST /api/digest/run (x-api-key = CRM_SEND_SECRET) sends on demand; ?dry=1 only returns the lists.
  */
-import nodemailer from "nodemailer";
+import { mailer, mailFrom } from "./mail.js";
 import { listPendingCallBacks, claimDigestDay, releaseDigestDay } from "./db.js";
 
 const ACTIVE = ["Open", "Waiting", "Probable", "Less Likely"];
@@ -113,13 +113,9 @@ export function renderDigest(d: Digest): { subject: string; html: string; text: 
 export async function sendOfficeDigest(dry = false): Promise<{ digest: Digest; sentTo: string[] }> {
   const digest = await buildDigest();
   const to = (process.env.OFFICE_DIGEST_EMAILS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  const host = process.env.SMTP_HOST;
   if (dry || to.length === 0) return { digest, sentTo: [] };
-  if (!host || !process.env.SMTP_USER || !process.env.SMTP_PASS) throw new Error("SMTP_HOST / SMTP_USER / SMTP_PASS are not set");
-  const port = Number(process.env.SMTP_PORT ?? 465);
-  const mail = nodemailer.createTransport({ host, port, secure: port === 465, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } });
   const { subject, html, text } = renderDigest(digest);
-  await mail.sendMail({ from: process.env.SMTP_FROM ?? process.env.SMTP_USER, to, subject, html, text });
+  await mailer().sendMail({ from: mailFrom("GLO admissions bot"), to, subject, html, text });
   return { digest, sentTo: to };
 }
 
