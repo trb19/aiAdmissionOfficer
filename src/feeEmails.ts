@@ -1,5 +1,6 @@
 /**
  * Fee emails to parents, from GLO Progress (tirth, 28 Nov 2026):
+ *   after an edit or undo, if the office says yes:  updated invoice / corrected receipt / cancellation note
  *   1st of the month, from 6 AM IST:  the month's invoice
  *   5th, from 9 AM:                   a friendly reminder to families with anything unpaid (due on the 7th)
  *   8th, from 9 AM:                   overdue notice (the ₹200 late fee is added at 6 AM that day)
@@ -183,6 +184,64 @@ export async function sendReceipts(dry = false): Promise<string[]> {
   return out;
 }
 
+// ---------- "Mail the parent?" after a change (tirth, 28 Nov 2026) ----------
+// When an invoice or payment is edited or undone in GLO Progress, the office is asked whether to mail the parent.
+// Yes adds a row to fee_mail_requests; this sends it: the updated invoice, the corrected receipt, or a short note
+// that a payment entry was cancelled (with what is now due).
+interface MailReq { id: string; child_id: string; kind: "invoice" | "receipt" | "undone"; month: string | null; receipt_no: string | null }
+
+const emailsOf = (c?: Child) => (c ? [...new Set([c.mother_email, c.father_email].map((e) => (e ?? "").trim().toLowerCase()).filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)))] : []);
+
+export async function sendRequested(dry = false): Promise<string[]> {
+  const reqs = await get<MailReq>(`fee_mail_requests?select=id,child_id,kind,month,receipt_no&sent_at=is.null&error=is.null&order=created_at&limit=${BATCH}`);
+  if (!reqs.length) return [];
+  const ids = [...new Set(reqs.map((r) => r.child_id))];
+  const [kids, invs, settingRows] = await Promise.all([
+    get<Child>(`children?select=id,name,class_id,admission_no,mother_email,father_email,mother_name,father_name&id=in.(${ids.join(",")})`),
+    get<PaidRow>(`fee_invoices?select=id,child_id,month,plan,amount,due_day,paid,waived,credit_used,kind,mode,receipt_no,paid_on,reference,recorded_at&child_id=in.(${ids.join(",")})`),
+    get<{ key: string; value: unknown }>(`settings?select=key,value`),
+  ]);
+  const s = Object.fromEntries(settingRows.map((r) => [r.key, typeof r.value === "string" ? r.value : String(r.value ?? "")]));
+  const school = s.school_name || "GLO Preschool";
+  const out: string[] = [];
+  for (const r of reqs) {
+    const c = kids.find((k) => k.id === r.child_id);
+    const to = emailsOf(c);
+    const mine = invs.filter((i) => i.child_id === r.child_id);
+    let mail: { subject: string; html: string; text: string } | null = null;
+    if (c && r.kind === "invoice" && r.month) {
+      const month = r.month;
+      const earlier = mine.filter((i) => i.month < month && !i.paid && !i.waived).reduce((t, i) => t + owed(i), 0);
+      const m = renderFeeEmail("invoice", month, c, mine.filter((i) => i.month === month), earlier, s);
+      mail = { subject: `Updated: ${m.subject}`, html: m.html.replace("<p>Dear Parent,</p>", "<p>Dear Parent,</p><p><b>This invoice has been updated and replaces the earlier one.</b></p>"), text: `This invoice has been updated and replaces the earlier one.\n\n${m.text}` };
+    } else if (c && r.kind === "receipt" && r.receipt_no) {
+      const rows = mine.filter((i) => i.paid && i.receipt_no === r.receipt_no);
+      if (rows.length) {
+        const m = renderReceipt(c, rows, s);
+        mail = { subject: `Corrected: ${m.subject}`, html: m.html.replace("<p>Dear Parent,</p>", "<p>Dear Parent,</p><p><b>This receipt has been corrected and replaces the earlier one.</b></p>"), text: `This receipt has been corrected and replaces the earlier one.\n\n${m.text}` };
+      }
+    } else if (c && r.kind === "undone") {
+      const due = mine.filter((i) => !i.paid && !i.waived).reduce((t, i) => t + owed(i), 0);
+      const subject = `${school}: receipt ${r.receipt_no ?? ""} for ${c.name} cancelled`;
+      const html = `<div style="font-family:Arial,sans-serif;color:#222;max-width:600px">
+<div style="height:5px;background:linear-gradient(90deg,#07ABEE 75%,#FAA619 75%)"></div>
+<h2 style="color:#07ABEE;margin:16px 0 4px">${esc(school)}</h2>
+<p>Dear Parent,</p><p>Receipt <b>${esc(r.receipt_no ?? "")}</b> for <b>${esc(c.name)}</b> was recorded by mistake and has been cancelled. Please ignore that receipt.</p>
+<p>${due > 0 ? `The amount now due is <b>${money(due)}</b>. If you have already paid, please reply with the transaction ID and we will update our records.` : "Nothing is due at the moment."}</p>
+<p>We are sorry for the confusion.</p><p>Warm regards,<br>Team GLO</p></div>`;
+      mail = { subject, html, text: `Receipt ${r.receipt_no ?? ""} for ${c.name} was recorded by mistake and has been cancelled.${due > 0 ? ` Amount now due: ${money(due)}.` : ""}\n\nTeam GLO` };
+    }
+    const note = !c ? "child not found" : !to.length ? "no parent email" : !mail ? "nothing to send" : null;
+    if (!dry) {
+      if (mail && to.length) await feeMailer().sendMail({ from: feeFrom(school), to, subject: mail.subject, html: mail.html, text: mail.text });
+      const u = await db(`fee_mail_requests?id=eq.${r.id}`, { method: "PATCH", body: JSON.stringify(note ? { error: note } : { sent_at: new Date().toISOString(), sent_to: to.join(",") }) });
+      if (!u.ok) throw new Error(`fee_mail_requests update failed (${u.status}): ${await u.text()}`);
+    }
+    out.push(`${r.kind} ${c?.name ?? "?"} → ${note ?? to.join(", ")}`);
+  }
+  return out;
+}
+
 let busy = false;
 /** One round: receipts first, then any invoice / reminder batch that is due. Safe to call often. */
 export async function feeRound(): Promise<void> {
@@ -191,6 +250,8 @@ export async function feeRound(): Promise<void> {
   try {
     const rec = await sendReceipts();
     if (rec.length) console.log(`Receipts emailed: ${rec.length}`);
+    const asked = await sendRequested();
+    if (asked.length) console.log(`Requested fee emails: ${asked.length}`);
     if (dueKind()) {
       const r = await sendFeeBatch();
       if (r.sent.length) console.log(`Fee emails (${r.kind}): sent ${r.sent.length}, skipped ${r.skipped}`);
